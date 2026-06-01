@@ -48,7 +48,7 @@ run is green; then the goal is declared fully realized.
       the per-run `apt-get` in the build scripts currently installs) so run.sh needs
       ZERO network apt at runtime; rebuild scrcpy-e2e:dev; do one green
       `bash e2e/run.sh` with the per-run apt-gets removed/asserted-absent.
-- [ ] Update README.md + the status table + ai/plans to reflect reality: the Android
+- [x] Update README.md + the status table + ai/plans to reflect reality: the Android
       client connects to and controls another Android device, proven by
       `bash e2e/run.sh` (two emulators, coordinate-faithful taps); document the
       one-command build+run; keep WIP framing honest (x86_64 emulator-proven, software
@@ -62,6 +62,46 @@ run is green; then the goal is declared fully realized.
       STATE.md. (When this passes, the loop should stop.)
 
 ### Progress log
+- 2026-06-01: **M4 task 2 DONE — README.md + status table + ai/plans rewritten to
+  reflect the proven, honest reality (docs-only; no code/build changes).**
+  **README.md:** updated the WIP banner (kept the banner + goal; dropped the stale
+  "Android-controlling-Android will be supported in the future / this fork is that
+  future work, not finished" framing → now "this fork is that work; the core
+  phone-to-phone path is demonstrably working in the automated two-emulator harness,
+  but remains WIP: emulator-proven only, not on real hardware, not on an app store").
+  **Status table** flipped from all-🚧 to: iOS=✅ (upstream, unchanged); Native port
+  → Android NDK (x86_64)=✅ done (FFmpeg/SDL2/OpenSSL/adb-mobile + libscrcpy.so
+  cross-compiled + bionic smoke); Android client app=✅ done (core path — loads
+  libscrcpy.so via SDL, connects over ADB-over-TCP, renders remote screen, forwards
+  touches); Dockerized two-emulator e2e=✅ done & reliably green (A controls B,
+  coordinate-faithful taps); + a new arm64-v8a/real-device=⬜ not-yet row. Replaced
+  the old protocol line ("B runs adb tcpip 5555; A connects to B_IP:5555") wording
+  with ADB-over-TCP. **New "What works today" section** — precise on HOW it's proven
+  (A runs our APK, connects to B via in-process adb-mobile through the socat bridge at
+  10.0.2.2:6555, pushes scrcpy-server 3.3.4 as an app asset, streams B's H.264
+  software-decoded, taps on A's remote view land on B; 2 calibration + 3 independent
+  validation taps fit the derived A→B affine transform within tolerance, no taps
+  lost/dup, ~1px error; controller-on-A vs assertion-on-B; broken conn / lost tap /
+  wrong map → non-zero exit; green across multiple warm + a cold rebuild). **New
+  "Known limitations / WIP" section** — x86_64-emulator-only (arm64/real-device
+  untested), software H.264 decode (no MediaCodec HW), minimal launcher UI, audio
+  disabled in e2e (no AVD capture HAL), system bars kept → video letterboxed (what the
+  transform accounts for), the status=6 Connected hijack not surfacing in logcat
+  (confirmed instead via scrcpy's own `INFO: Connected to` line + server-on-B). **New
+  "Building & running the end-to-end test" section** — the one command
+  (`bash e2e/run-on-d-claude.sh` from a clone, or `bash e2e/run.sh` on a Docker+KVM
+  host), what it does, requirements (Docker + /dev/kvm only; hermetic image; inner
+  runs `--network none`), artifacts land in `e2e/artifacts/`, links e2e/README.md.
+  **ai/plans/00-master-plan.md:** added a brief "Status (2026-06-01)" block — M0–M3
+  done (audited), M4 in progress (hermetic e2e done, docs updated, arm64 stretch +
+  final audit remaining); pointed at STATE.md as the live tracker.
+  **Claims are all sourced from this progress log — no overclaiming; emulator-proven
+  WIP framing kept throughout.** **Link sanity:** all referenced relative paths exist
+  (`porting/`, `ai/plans/`, `ai/research/`, `e2e/`, `e2e/README.md`, `LICENSE`);
+  tables render. **Committed:** README.md, ai/plans/00-master-plan.md, STATE.md (no
+  e2e/README.md change needed — it already documents the image/pins accurately). No
+  `git add -A`/`-a`; no `--no-verify`. NEXT: M4 task 3 (arm64-v8a stretch) / task 4
+  (final cold audit).
 - 2026-06-01: **M4 task 1 DONE — `bash e2e/run.sh` is now HERMETIC: ZERO runtime apt,
   proven by a fully GREEN `--network none` end-to-end run (exit 0, 5/5 coordinate-faithful
   taps, Connected, both APKs built offline).**

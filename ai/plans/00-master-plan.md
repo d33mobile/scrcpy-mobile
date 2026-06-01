@@ -15,6 +15,17 @@ Environment facts (see `ai/research/00-findings.md`): d-claude = x86_64, KVM +
 nested-virt present, emulator-in-Docker already proven on this host, redroid ruled
 out (no binderfs/ashmem), big scratch on `/srv/work` & `/tank`.
 
+## Status (2026-06-01)
+
+- **M0–M3: done** (all passed their audits). The locked goal is demonstrated: our
+  Android app on emulator A controls emulator B coordinate-faithfully, proven by a
+  reliably-green Dockerized e2e (`bash e2e/run.sh`).
+- **M4: in progress** — hermetic e2e is done (zero runtime apt, `--network none`
+  green); docs/README updated to reflect reality; arm64-v8a port is the remaining
+  stretch item, then the final cold audit.
+
+`ai/plans/STATE.md` is the live per-iteration tracker; this file is the plan.
+
 ---
 
 ## Design overview
