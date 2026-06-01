@@ -33,7 +33,7 @@ Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
       iOS build**: new scripts/targets (parallel to the iOS ones) that emit into
       `output/android/x86_64/`. Drive arch/SDK selection so iOS Makefile targets are
       untouched. Pin NDK 27.2.12479018 (matches `scrcpy-e2e:dev`).
-- [ ] Cross-compile **FFmpeg** for android x86_64 (NDK clang, `--target-os=android
+- [x] Cross-compile **FFmpeg** for android x86_64 (NDK clang, `--target-os=android
       --arch=x86_64`, software H.264 decode; no VideoToolbox).
 - [ ] Cross-compile **SDL2** for android x86_64 using SDL2's native Android backend
       (not the iOS UIKit path).
@@ -49,6 +49,33 @@ Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
       `scrcpy-e2e:dev` on d-claude and capture output. Commit + push when green.
 
 ### Progress log
+- 2026-06-01: **M1 task 2 done — FFmpeg cross-compiled for android x86_64.**
+  New `porting/scripts/make-ffmpeg-android.sh` (mirrors the iOS `make-ffmpeg.sh` but
+  retargets the NDK): same **FFmpeg release/6.0**, sources the M1-task-1
+  `scripts/android-defines.sh` toolchain (CC=`x86_64-linux-android26-clang`,
+  `--cross-prefix=$TOOLCHAIN/bin/llvm-`, `--sysroot`, `--target-os=android
+  --arch=x86_64 --enable-cross-compile`). Source is git-cloned once and cached under
+  `porting/build/ffmpeg-android/ffmpeg-source` (re-runs reuse it). **Static `.a`**
+  (mirrors iOS: `--enable-static --disable-shared`); **no VideoToolbox/MediaCodec/JNI**
+  (`--disable-videotoolbox --disable-mediacodec --disable-jni`), software decode only.
+  **Lean config:** `--disable-everything` then enable avcodec/avformat/avutil/swscale/
+  swresample + decoders h264,hevc,av1,aac,opus,flac,pcm_s16le + matching parsers +
+  demuxers (h264/hevc/av1/aac/ogg/flac/pcm + matroska/mov/mpegts) + protocols
+  file,pipe. (avfilter/avdevice also fall out of the build — kept; mirrors the iOS
+  link list which includes both.) **x86 asm: nasm** (auto-detected; script falls back
+  to `--disable-x86asm` if absent). Wired `android-ffmpeg` target in
+  `porting/Makefile.android` to call the script (TODO stub replaced; iOS untouched).
+  Outputs to `output/android/x86_64/lib*.a` + `include/` in the iOS layout.
+  **BUILT GREEN on d-claude in `scrcpy-e2e:dev`** (apt-get installed make/nasm/
+  pkg-config transiently in the run command — NOT baked into the Dockerfile, kept the
+  image change-free): `EXIT_CODE=0`, "DONE. Libraries in: output/android/x86_64".
+  Produced: libavcodec.a 5.0M, libavformat.a 844K, libavutil.a 1.2M, libswscale.a
+  1.4M, libswresample.a 212K, libavfilter.a 197K, libavdevice.a 13K, + full include/
+  tree (libav*/libsw*). **VERIFIED Android x86_64:** `llvm-readelf -h` on an extracted
+  object shows `ELF64 / X86-64 / REL`; `llvm-nm libavcodec.a` finds `T
+  avcodec_send_packet` and `D ff_h264_decoder` (H.264 software decoder compiled in).
+  gitignore confirmed ignoring `output/` + `build/` + `*.a` (only script + Makefile +
+  STATE committed; no FFmpeg sources or libs).
 - 2026-06-01: **M1 task 1 done — Android NDK build scaffold (scaffolding only).**
   Added `porting/scripts/android-defines.sh` (NDK locate honoring
   `$ANDROID_NDK_ROOT` / `$ANDROID_SDK_ROOT/ndk/27.2.12479018` / `$ANDROID_HOME`,

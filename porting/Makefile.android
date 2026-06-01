@@ -46,8 +46,8 @@ android-toolchain-check: android-mkdir-output
 		echo "[android] TOOLCHAIN_OK"
 
 android-ffmpeg: android-mkdir-output
-	@. scripts/android-defines.sh >/dev/null && \
-		echo "TODO(M1): cross-compile FFmpeg for android $(TARGET_ABI) -> $(ANDROID_OUTPUT_DIR)"
+	OUTPUT="$(ANDROID_OUTPUT_DIR)" TARGET_ABI="$(TARGET_ABI)" ANDROID_API="$(ANDROID_API)" \
+		bash scripts/make-ffmpeg-android.sh
 
 android-libsdl: android-mkdir-output
 	@. scripts/android-defines.sh >/dev/null && \
