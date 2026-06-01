@@ -1,0 +1,10 @@
+SDL Android Activity Java glue, vendored for M2 (Android app wiring).
+
+Source: SDL2-2.32.8
+Path in tarball: android-project/app/src/main/java/org/libsdl/app/*.java
+Vendored by: porting/scripts/make-libsdl-android.sh
+
+These classes (SDLActivity, SDLSurface, SDLAudioManager, HIDDevice*, ...) are
+the Java side of SDL2's Android backend. SDLActivity.loadLibraries() loads
+libSDL2.so and the app's native lib at runtime. M2 imports this package into the
+Android client app so the SDL Android backend can run.

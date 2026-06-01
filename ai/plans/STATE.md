@@ -35,7 +35,7 @@ Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
       untouched. Pin NDK 27.2.12479018 (matches `scrcpy-e2e:dev`).
 - [x] Cross-compile **FFmpeg** for android x86_64 (NDK clang, `--target-os=android
       --arch=x86_64`, software H.264 decode; no VideoToolbox).
-- [ ] Cross-compile **SDL2** for android x86_64 using SDL2's native Android backend
+- [x] Cross-compile **SDL2** for android x86_64 using SDL2's native Android backend
       (not the iOS UIKit path).
 - [ ] Provide **OpenSSL** for android x86_64 (cross-build, or a vetted prebuilt /
       NDK approach). Document choice.
@@ -49,6 +49,43 @@ Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
       `scrcpy-e2e:dev` on d-claude and capture output. Commit + push when green.
 
 ### Progress log
+- 2026-06-01: **M1 task 3 done — SDL2 cross-compiled for android x86_64 (native
+  Android backend).** New `porting/scripts/make-libsdl-android.sh` (mirrors the
+  iOS `make-libsdl.sh` STYLE but retargets the NDK; iOS script untouched). **Same
+  SDL2 version as iOS: 2.32.8** (downloaded from libsdl.org, tarball cached under
+  `porting/build/libsdl-android/`, re-runs reuse it). **Build method:** SDL2's own
+  CMake build driven through the NDK `build/cmake/android.toolchain.cmake`
+  (resolved by android-defines.sh) with `-DANDROID_ABI=x86_64
+  -DANDROID_PLATFORM=android-26 -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST=OFF`
+  → **SHARED `libSDL2.so`** (the Android norm, loaded at runtime by SDLActivity in
+  M2). cmake auto-selected the **Android backend** (configure summary: `Platform:
+  Android-1`; compiled `src/core/android/SDL_android.c`, `audio/openslES`,
+  `audio/aaudio`, `video/android/SDL_android{video,touch,events,clipboard,...}.c`,
+  `joystick/android`, `sensor/android` — NOT the iOS UIKit path). Wired
+  `android-libsdl` target in `porting/Makefile.android` to call the script (TODO
+  stub replaced; iOS untouched). Outputs `output/android/x86_64/libSDL2.so` +
+  `include/SDL2/*.h` (79 headers incl. generated SDL_config.h — iOS-compatible
+  layout so libscrcpy can `#include <SDL.h>`).
+  **BUILT GREEN on d-claude in `scrcpy-e2e:dev`** (`EXIT_CODE=0`, 265/265 ninja
+  steps + install). **apt deps:** transiently `apt-get install make ninja-build`
+  in the run command (NOT baked into the image, same as the FFmpeg task). **cmake:**
+  the image's Android-SDK cmake 3.22.1 is NOT on PATH; the script auto-prepends
+  `$ANDROID_SDK_ROOT/cmake/<ver>/bin` (which also supplies the bundled ninja) when
+  `cmake` is absent — so the build is self-contained. **libSDL2.so size: 6.2M.**
+  **VERIFIED Android x86_64** (`llvm-readelf`/`llvm-nm` in the image): `ELF64 / DYN
+  (shared object) / X86-64`; SONAME `libSDL2.so`; NEEDED includes the Android
+  system libs `libOpenSLES.so libandroid.so liblog.so libGLESv1_CM.so libGLESv2.so`
+  (proves Android backend, not iOS); `.note.android.ident` present; `llvm-nm -D`
+  finds `T SDL_Init`, `T SDL_CreateWindow`, `T SDL_GetPlatform`; SDL.h present.
+  **SDL Android Java glue for M2:** vendored 9 files (SDLActivity, SDLSurface,
+  SDLAudioManager, SDLControllerManager, SDL, HIDDevice*) from the SDL2-2.32.8
+  tarball's `android-project/app/src/main/java/org/libsdl/app/` into
+  `porting/vendor/sdl-android-java/org/libsdl/app/` (TRACKED — `.gitignore`
+  ignores `porting/libs` but NOT `porting/vendor`; verified `git check-ignore`
+  exit 1) + a `SOURCE.txt` provenance note. M2 imports this `org.libsdl.app`
+  package so SDLActivity.loadLibraries() loads libSDL2.so at runtime. gitignore
+  confirmed swallowing `output/` + `build/` + `*.so` (only script + Makefile edit
+  + vendored java + STATE committed; no SDL tarball or libSDL2.so).
 - 2026-06-01: **M1 task 2 done — FFmpeg cross-compiled for android x86_64.**
   New `porting/scripts/make-ffmpeg-android.sh` (mirrors the iOS `make-ffmpeg.sh` but
   retargets the NDK): same **FFmpeg release/6.0**, sources the M1-task-1

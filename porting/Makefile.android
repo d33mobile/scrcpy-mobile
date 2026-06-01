@@ -50,8 +50,8 @@ android-ffmpeg: android-mkdir-output
 		bash scripts/make-ffmpeg-android.sh
 
 android-libsdl: android-mkdir-output
-	@. scripts/android-defines.sh >/dev/null && \
-		echo "TODO(M1): cross-compile SDL2 (Android backend) for android $(TARGET_ABI) -> $(ANDROID_OUTPUT_DIR)"
+	OUTPUT="$(ANDROID_OUTPUT_DIR)" TARGET_ABI="$(TARGET_ABI)" ANDROID_API="$(ANDROID_API)" \
+		bash scripts/make-libsdl-android.sh
 
 android-openssl: android-mkdir-output
 	@. scripts/android-defines.sh >/dev/null && \
