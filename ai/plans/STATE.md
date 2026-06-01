@@ -18,37 +18,99 @@ host = `d-claude` (ssh). Build/run scratch on d-claude under `/srv/work`.
 
 ---
 
-## Current milestone: **M2 — Android client app wraps the native lib**
+## Current milestone: **M3 — Full GUI-automation two-emulator e2e (THE GOAL GATE)**
 
 (M0 — Scaffolding & red-but-running pipeline — **PASSED audit 2026-06-01**.
 M1 — Native stack cross-compiled for Android x86_64 — **PASSED audit 2026-06-01**;
-all 7 tasks done; see progress log. `libscrcpy.so` + deps build green and the NDK
-smoke exe runs `scrcpy_main --help` cleanly on the bionic linker.)
+`libscrcpy.so` + deps build green and the NDK smoke exe runs `scrcpy_main --help`
+cleanly on the bionic linker.
+M2 — Android client app wraps the native lib — **PASSED audit 2026-06-01**; clean
+rebuild links + exports `T scrcpy_android_main` + `T scrcpy_main`, the APK bundles
+all three .so + the SDL glue, and a fresh-emulator launch enters scrcpy_main and
+runs the native client with zero crashes. See progress log.)
 
-Accept: the android-app APK bundles `libscrcpy.so` + its runtime deps (`libSDL2.so`,
-`libc++_shared.so`, etc.) and the SDL Java glue; installed on an x86_64 emulator A it
-calls `scrcpy_main` against a target and the app process loads + runs the native
-client (connection attempt visible) without crashing.
+Accept: `bash e2e/run.sh` on d-claude (one script) boots TWO emulators (B=target,
+A=controller running our APK), A's app connects to B over ADB-over-TCP and renders
+B's screen, then UI automation on A taps the rendered remote view and the test
+asserts B reacted to that exact input; reliably green across repeated runs incl. a
+cold run.
 
 ### Tasks
-- [x] Integrate `libscrcpy.so` + deps (`libSDL2.so`, `libc++_shared.so`, the
-      FFmpeg/openssl/adb already linked-in) + SDL Java glue
-      (`porting/vendor/sdl-android-java` `org.libsdl.app.*`) into the android-app
-      Gradle build (`jniLibs/x86_64` + `sourceSets`); app builds an APK that packages
-      them.
-- [x] Make `MainActivity` (or an `SDLActivity` subclass) load the SDL libs +
-      `libscrcpy.so` and expose a JNI/native entrypoint that calls
-      `scrcpy_main(argc,argv)` on a worker thread; implement the
-      `ScrcpyUpdateStatus` callback to surface status to the UI/log.
-- [x] Minimal UI: a screen to enter target `host:port` + Connect, then hand off to
-      the SDL surface (remote view). Wire touches on the surface into scrcpy control
-      (handled by the native SDL event loop).
-- [x] Build the APK in `scrcpy-e2e:dev`; install it on an x86_64 emulator (use the
-      e2e harness emulator A) and confirm via logcat that the app loads
-      `libscrcpy.so` and enters `scrcpy_main` (a connection attempt to a `host:port`
-      is logged) WITHOUT crashing. Capture logcat evidence.
+- [ ] Solve A→B reachability in the harness: boot both emulators; expose B's
+      adb-over-tcp (`adb tcpip 5555` on B) at an address emulator A's in-process adb
+      can reach (e.g. forward B:5555 to the container host, A connects via
+      10.0.2.2:PORT). Verify from inside A that the target is reachable. Document the
+      address scheme.
+- [ ] Put a DETERMINISTIC input target on B (a known app/activity or widget whose
+      state is checkable via dumpsys/uiautomator), so a tap at a known coordinate
+      produces an unambiguous, assertable state change on B.
+- [ ] Drive A: launch MainActivity → enter B's reachable host:port → Connect →
+      ScrcpyActivity; confirm via A's logcat the session reaches Connected
+      (ScrcpyUpdateStatus Connected) and scrcpy-server is running on B (pidof /
+      dumpsys on B).
+- [ ] Full GUI automation: with uiautomator/adb `input` ON EMULATOR A, tap a known
+      coordinate over the rendered remote-view surface; map it to the expected
+      coordinate on B; assert via B (uiautomator/dumpsys/screencap) that B received
+      that exact input. Handle the coordinate scaling (A's surface → B's resolution).
+- [ ] Wire this as the REAL e2e in e2e/run.sh (replace the M0 placeholder
+      assertion): two emulators, connect, automate, assert; idempotent,
+      self-cleaning, artifacts (logcat A+B, screenshots) to mounted dir, correct exit
+      codes.
+- [ ] Make it reliably green: run `bash e2e/run.sh` via run-on-d-claude.sh ≥3 times
+      incl. one cold run; 100% pass. Capture evidence.
 
 ### Progress log
+- 2026-06-01: **M2 AUDIT PASSED.** Skeptical audit re-verified everything with
+  commands on d-claude (`scrcpy-e2e:dev`, `--device /dev/kvm`, NDK 27.2.12479018),
+  trusting nothing cached. Evidence:
+  • **Clean rebuild:** deleted the cached `output/android/x86_64/libscrcpy.so` +
+    `porting/build/scrcpy-android`, rsync'd the tree, ran
+    `make android-scrcpy TARGET_ABI=x86_64` → **70/70 ninja, MAKE_RC=0**, fresh
+    `libscrcpy.so` (13,044,824 B). `llvm-nm -D`: exports `T scrcpy_android_main`,
+    `T scrcpy_main`, `T scrcpy_print_version`, `T JNI_OnLoad`,
+    `T Java_net_scrcpy_android_NativeBridge_runScrcpy`,
+    `T Java_net_scrcpy_android_ScrcpyActivity_nativeSetHome`, `T ScrcpyUpdateStatus`.
+    `llvm-readelf`: ELF64 / DYN / X86-64, FLAGS=SYMBOLIC only (**no TEXTREL**),
+    NEEDED includes libSDL2.so + libc++_shared.so + libz.so. `stage-natives.sh` +
+    `./gradlew --no-daemon assembleDebug` → **BUILD SUCCESSFUL** (app-debug.apk =
+    24,322,263 B). `unzip -l`: `lib/x86_64/{libscrcpy.so 13044824, libSDL2.so
+    6405544, libc++_shared.so 1617608}`; the APK-embedded libscrcpy.so still exports
+    `T scrcpy_android_main` + `T scrcpy_main`; dexdump finds
+    `Lnet/scrcpy/android/{ScrcpyActivity,MainActivity,NativeBridge};` +
+    `Lorg/libsdl/app/SDLActivity;`.
+  • **Fresh-emulator run (`e2e/launch-app.sh`, SKIP_BUILD=1, target 127.0.0.1:5555,
+    one mem=1536 emulator):** harness exit 0. VERBATIM key logcat from THIS run
+    (app pid 2923, 09:11:47):
+    ```
+    V SDL    : Running main function scrcpy_android_main from library /data/app/.../net.scrcpy.android-.../lib/x86_64/libscrcpy.so
+    V SDL    : nativeRunMain()
+    I scrcpy : onScrcpyStatus: status=2 message=SDL Inited
+    I scrcpy : onScrcpyStatus: status=2 message=SDL Inited
+    I scrcpy : onScrcpyStatus: status=2 message=SDL Inited
+    V SDL    : Finished main function
+    V SDL    : SDLActivity thread ends
+    ```
+    So SDL dlsym'd + called our exported `scrcpy_android_main` from libscrcpy.so,
+    control entered `scrcpy_main`, the native `ScrcpyUpdateStatus` callback fired
+    (status=2 = ScrcpyStatusSDLInited, emitted from inside scrcpy_main's hijacked
+    SDL_Init), scrcpy attempted the adb connect to the (deviceless) target, failed
+    fast, returned, and SDL finished cleanly. **Crash-greps over THIS run's
+    logcat-full.txt: UnsatisfiedLinkError=0, dlopen-fail=0,
+    Fatal-signal/SIGSEGV/SIGABRT/signal11/signal6/Scudo=0, FATAL EXCEPTION/ANR=0.**
+    The harness's own diagnostic: "PASS: native libs loaded, scrcpy entered, no
+    crash. (connection attempt: yes)". (Note: the bridge's direct LOGI argc/argv
+    lines were not captured, but the SDL "Running main function scrcpy_android_main"
+    line + the in-scrcpy_main status callback are unambiguous proof the native
+    client loaded + ran.)
+  • **iOS intact:** android-jni-bridge.c, android-stubs.c, android-adb-stubs.cpp all
+    guarded (`#if defined(__ANDROID__)` / `#if !defined(__APPLE__)`); NONE referenced
+    in the iOS `porting/cmake/CMakeLists.txt`. `.gitmodules` diff (e06e734..HEAD)
+    empty; submodule pointers NOT bumped (scrcpy @fb6381f, adb-mobile @78c32c2).
+  • **git:** the 4 M2 commits (`19722f9..1c26758`) all pushed to `fork`
+    (remote android-controls-android HEAD = 1c26758 = local HEAD); tree clean; no
+    `.so`/`.a`/`.apk`/`.dex` tracked; jniLibs gitignored. Audit emulator killed,
+    throwaway container auto-removed, mf-e2e-*/redroid/ws-scrcpy untouched, host
+    clean (no orphan qemu, e2e_app AVD deleted). **→ advancing to M3.**
 - 2026-06-01: **M2 task 4 done — APK launched on a headless x86_64 emulator;
   libscrcpy.so loads, scrcpy_main is entered, the in-process adb host runs through
   its connection path, NO crash. M2 COMPLETE. Two REAL native bugs found + fixed
