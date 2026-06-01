@@ -65,8 +65,107 @@ run is green; then the goal is declared fully realized.
 - [ ] FINAL goal audit: clear caches, run `bash e2e/run.sh` cold once more green;
       confirm hermeticity + docs; then declare the locked goal FULLY REALIZED in
       STATE.md. (When this passes, the loop should stop.)
+- [ ] **FIX HERMETICITY ON A COLD CACHE (audit FAIL 2026-06-01).** The native build is
+      NOT hermetic: on a truly cold cache the three native deps fetch their SOURCE over
+      the network — `porting/scripts/make-ffmpeg-android.sh:70` `git clone --depth 1
+      --branch release/6.0 https://github.com/FFmpeg/FFmpeg.git`,
+      `make-libsdl-android.sh:102` `curl https://www.libsdl.org/release/SDL2-2.32.8.tar.gz`,
+      `make-openssl-android.sh:89` `curl https://.../openssl-1.1.1w.tar.gz`. So a COLD
+      `bash e2e/run.sh` under `--network none` (FORCE_NATIVE_REBUILD=1) FAILS at the very
+      first native step (`Could not resolve host: github.com`, exit 2). Prior STATE claims
+      of a "hermetic cold native compile offline" were against a host checkout where
+      `porting/build/` already held those sources from an earlier networked run (the
+      run-on-d-claude wrapper excludes `porting/build/` from the `--delete` rsync, so the
+      source cache silently persists) — i.e. warm-source, not truly cold. FIX: bake the
+      pinned FFmpeg release/6.0 source + the SDL2-2.32.8 and openssl-1.1.1w tarballs into
+      e2e/Dockerfile (or vendor them) so the native build needs ZERO network, then PROVE a
+      cold `--network none` run (caches cleared + FORCE_NATIVE_REBUILD=1) reaches the
+      SUCCESS banner with 5/5 taps and no clone/curl. (The APK/Gradle half + the
+      run/control half ARE already hermetic — both confirmed green under `--network none`,
+      see log.)
+- [ ] **FIX DOCS HONESTY re hermeticity (audit FAIL 2026-06-01).** README.md "Building &
+      running" overclaims: "The image is hermetic — all build dependencies are baked into
+      e2e/Dockerfile, and the e2e itself runs the inner container with `--network none`".
+      The image bakes apt/SDK deps only; the native SOURCE is fetched at build time, and
+      the default `e2e/run.sh` outer does NOT use `--network none` (only this audit and the
+      M4-task-1 run invoked `--network none` by hand). Either (a) make it true (vendor the
+      native sources per the task above + add `--network none` to the outer `docker run`),
+      or (b) until then, soften the README to say the APK/run half is hermetic while the
+      cold native build still fetches FFmpeg/SDL2/OpenSSL source over the network.
 
 ### Progress log
+- 2026-06-01: **FINAL M4 AUDIT — VERDICT: FAIL. The FUNCTIONAL locked goal is proven (our
+  Android app on emulator A controls emulator B coordinate-faithfully), but the HERMETICITY
+  requirement of the locked goal FAILS on a cold cache, so the goal is NOT yet fully
+  realized. The loop must continue.** Audit ran on d-claude (scrcpy-e2e:dev, --device
+  /dev/kvm, 2x mem=1536), trusting commands not prose.
+  **CHECK 1 (cold + `--network none`) — FAILED.** Cleared the gradle volume (`docker volume
+  rm/create scrcpy-gradle-cache` → 8.5K empty), wiped `output/android` +
+  `porting/build/{ffmpeg,libsdl,openssl,scrcpy,adb-mobile}-android` + `porting/libs` + staged
+  jniLibs/assets + both APK build dirs, then `docker run --rm --network none --device /dev/kvm
+  ... -e FORCE_NATIVE_REBUILD=1 ... run.sh --inner`. (`--network none` isolation
+  pre-verified: `getent hosts dl.google.com` → NO-NET-good.) Result — VERBATIM:
+  ```
+  [ffmpeg-android] cloning FFmpeg release/6.0 ...
+  Cloning into '/workspace/porting/build/ffmpeg-android/ffmpeg-source'...
+  fatal: unable to access 'https://github.com/FFmpeg/FFmpeg.git/': Could not resolve host: github.com
+  make: *** [Makefile.android:49: android-ffmpeg] Error 128
+  COLD_NETNONE_EXIT=2
+  ```
+  **ROOT CAUSE — the native build fetches SOURCE over the network (3 deps):**
+  `porting/scripts/make-ffmpeg-android.sh:70` git-clones FFmpeg from github.com;
+  `make-libsdl-android.sh:102` curls `https://www.libsdl.org/release/SDL2-2.32.8.tar.gz`;
+  `make-openssl-android.sh:89` curls `openssl-1.1.1w.tar.gz`. None are baked/vendored. Prior
+  "hermetic cold" claims were warm-SOURCE (the run-on-d-claude wrapper excludes
+  `porting/build/` from its `--delete` rsync, so the source cache persists between runs) —
+  not a true cold cache. The e2e/Dockerfile bakes apt + SDK deps only.
+  **WHAT IS green (so the FUNCTIONAL goal stands + the fix is scoped to native source):**
+   • COLD **networked** run (FORCE_NATIVE_REBUILD=1, default outer): exit 0, SUCCESS banner,
+     `INFO: Connected to 10.0.2.2:6555`, scrcpy-server `net.scrcpy.e2etarget` on B, fresh
+     `libscrcpy.so` (14,111,168 B), both APKs `BUILD SUCCESSFUL`; logged `[ffmpeg-android]
+     cloning`, `[libsdl-android] downloading SDL2-2.32.8`, `[openssl-android] downloading
+     openssl-1.1.1w`. 5/5 coordinate-faithful taps:
+     ```
+     derived A->B transform (x1000): SX=1000 OX=-1000 SY=1109 OY=-70784
+     p1 [calibration] (324,576)  -> expect (323,568)  got (323,568)  dx=0 dy=0 PASS
+     p2 [calibration] (756,1344) -> expect (755,1420) got (755,1420) dx=0 dy=0 PASS
+     p3 [validation]  (540,960)  -> expect (539,994)  got (540,994)  dx=1 dy=0 PASS
+     p4 [validation]  (756,576)  -> expect (755,568)  got (755,568)  dx=0 dy=0 PASS
+     p5 [validation]  (324,1344) -> expect (323,1420) got (323,1420) dx=0 dy=0 PASS
+     B final tap count = 5 (sent 5)   COLD_NETWORKED_EXIT=0
+     ```
+   • WARM **`--network none`** run (native lib now present, no FORCE_NATIVE_REBUILD): exit 0,
+     SUCCESS banner, same transform + identical 5/5 PASS table, no apt/clone/curl/Get:/
+     UnknownHost in the log → the APK-build + emulator-boot + connect + tap-assert half IS
+     hermetic. `WARM_NETNONE_EXIT=0`.
+  **ASSERTION INTEGRITY (re-read run.sh inner_full + lib-automation.sh) — sound, not
+  gameable:** taps injected on A (`auto_tap_on_a` = `adb -s emulator-5556 shell input tap`),
+  state read from B (`auto_read_b` → `adb -s emulator-5554` target file channel); exit 0 only
+  if Connected (`INFO: Connected to`) + scrcpy-server proc on B + B count == sent + every tap
+  (incl. 3 independent validation pts) within max(25px,3%) of the calibration-derived affine
+  map; a NA/lost tap → `fail "control path broken"`, count mismatch → fail, bad map → fail.
+  **DOCS — also FAIL (overclaim):** README "Building & running" says "The image is hermetic —
+  all build dependencies are baked into e2e/Dockerfile, and the e2e itself runs the inner
+  container with `--network none`". Untrue: native source is fetched at cold build time, and
+  the default `run.sh` outer does NOT pass `--network none`. (Rest of README — status table,
+  what-works, x86_64-only / SW-decode / minimal-UI / arm64-built-not-device-tested
+  limitations — is accurate.)
+  **arm64-v8a (check 6):** consistent with committed scripts — `android-defines.sh:58-60`
+  maps `arm64-v8a → aarch64-linux-android`; ffmpeg/openssl/sdl/adb scripts all branch on
+  `arm64-v8a`; `android-app/app/build.gradle.kts` lists both ABIs. ELF-verified-only,
+  on-device untested (as documented); NON-BLOCKING.
+  **iOS / submodules / git (check 7) — all clean:** `git diff fd05022..HEAD` touches only
+  README/plans/build.gradle.kts/Dockerfile/e2e-scripts (no iOS sources); no `Subproject
+  commit` changes in range; submodules at scrcpy@fb6381f (v3.3.4) + adb-mobile@78c32c2;
+  `porting/src/android-jni-bridge.c` fully `#if defined(__ANDROID__)` (L22..L397) and NOT in
+  `porting/cmake/` (iOS build); no `scrcpy-porting.c` diff in range; HEAD `d2af6d1` ==
+  `fork/android-controls-android` (0 ahead/0 behind), tree clean, no `.so/.a/.apk/.o/.dex`
+  tracked (scrcpy-server only under `scrcpy-app/ADBClient/`).
+  **SELF-CLEAN:** all `docker run --rm`; after the runs — 0 scrcpy-e2e containers, 0
+  qemu-system, 0 socat-6555, 0 e2e AVDs; mf-e2e-* / redroid / ws-scrcpy untouched; one e2e at a
+  time (RAM rule honoured). **VERDICT: the locked goal is NOT fully realized — the harness is
+  not hermetic on a cold cache and the docs overclaim it. Two new M4 tasks added above; the
+  loop continues until a COLD `--network none` run is green and the docs are honest.**
 - 2026-06-01: **M4 task 3 (STRETCH) DONE — the FULL native stack + libscrcpy.so
   cross-compile cleanly for arm64-v8a (real-device ABI), proven by AArch64 ELF +
   symbol evidence. On-device run is NOT tested (no arm64 hardware/runtime); the qemu
