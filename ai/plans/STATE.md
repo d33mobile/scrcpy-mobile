@@ -100,7 +100,7 @@ run is green; then the goal is declared fully realized.
       SUCCESS banner with 5/5 taps and no clone/curl. (The APK/Gradle half + the
       run/control half ARE already hermetic — both confirmed green under `--network none`,
       see log.)
-- [ ] **FIX DOCS HONESTY re hermeticity (audit FAIL 2026-06-01).** README.md "Building &
+- [x] **FIX DOCS HONESTY re hermeticity (audit FAIL 2026-06-01) — DONE 2026-06-01.** README.md "Building &
       running" overclaims: "The image is hermetic — all build dependencies are baked into
       e2e/Dockerfile, and the e2e itself runs the inner container with `--network none`".
       The image bakes apt/SDK deps only; the native SOURCE is fetched at build time, and
@@ -121,6 +121,41 @@ run is green; then the goal is declared fully realized.
       passes, the loop STOPS.
 
 ### Progress log
+- 2026-06-01: **M4 DOCS-HONESTY task — DONE (docs only; no code/build change).** Reconciled
+  README.md (+ e2e/README.md) with the now-ACCURATE hermeticity model that the
+  native-source + Gradle baking + `--network none`-by-default work made real. Verified the
+  three code facts before writing a word: (1) `e2e/run.sh` `outer()` sets `local netarg="--network
+  none"` and passes `$netarg` to the inner `docker run` BY DEFAULT — escape hatch
+  `E2E_ALLOW_NET=1` blanks it (lines ~73-97); (2) `e2e/Dockerfile` bakes the native sources
+  (`ENV NATIVE_SRC_DIR=/opt/native-src` + git-clone FFmpeg release/6.0 + wget SDL2-2.32.8 /
+  openssl-1.1.1w tarballs) AND the offline Gradle home (`ENV GRADLE_USER_HOME=/opt/gradle-home`,
+  COPY android-app + e2e/target-app + porting/vendor/sdl-android-java, then `assembleDebug` ×2 at
+  image-build time → gradle-8.9 dist in `wrapper/dists` + AGP/Kotlin/AndroidX in `caches/modules-2`);
+  (3) `run.sh build_apks` asserts/exports `GRADLE_USER_HOME=/opt/gradle-home` and builds both APKs
+  with `./gradlew --no-daemon --offline assembleDebug`. **README "Building & running" REWRITE
+  (before → after):** BEFORE = the single overclaim sentence "The image is hermetic — all build
+  dependencies are baked into `e2e/Dockerfile`, and the e2e itself runs the inner container with
+  `--network none` (no runtime apt / Maven / SDK fetches)." (untrue when written — only apt/SDK
+  were baked, native source was fetched at build time, and `--network none` was not the default).
+  AFTER = a precise two-phase model: (a) the IMAGE BUILD (`docker build`) is networked + one-time
+  and bakes apt tools + SDK/NDK/CMake/emulator + the pinned native sources (FFmpeg release/6.0,
+  SDL2 2.32.8, OpenSSL 1.1.1w → /opt/native-src) + an offline `GRADLE_USER_HOME=/opt/gradle-home`
+  (gradle-8.9 dist + all AGP/Kotlin/AndroidX Maven deps); (b) the e2e RUN itself is fully offline —
+  `run.sh` runs the inner container with `--network none` by DEFAULT (no flag needed), the native
+  stack cross-compiles from the baked sources, both APKs build `--offline` from the baked Gradle
+  home, any un-baked input fails loudly; proven by a from-absolute-scratch `--network none` run
+  (gradle volume removed + native caches cleared, image only) → SUCCESS banner + 5/5
+  coordinate-faithful taps + zero network fetches; `E2E_ALLOW_NET=1` re-prime/debug escape hatch
+  documented. Also fixed the Requirements line to "Requirements at run time: Docker + `/dev/kvm`
+  only — no network needed". **e2e/README.md aligned:** added a "Hermeticity" section (same
+  two-phase wording) and FIXED the stale build command `docker build ... e2e` → `... .` (context
+  is the repo ROOT now, per run.sh `outer`, because the gradle-prime layer COPYs paths outside
+  e2e/) with a note about the repo-root `.dockerignore`. No overclaim reintroduced, no underselling
+  of the now-real hermeticity; the one-time networked image build is credited, the offline run is
+  stated precisely. **Markdown sanity:** all referenced relative paths exist (porting/, ai/plans/,
+  ai/research/, e2e/, e2e/README.md, LICENSE); status + pins tables render. **Committed (docs only):**
+  README.md, e2e/README.md, STATE.md; pushed to fork. NO code/build/script change; no
+  `git add -A`/`-a`/`--no-verify`. NEXT: M4 FINAL goal audit.
 - 2026-06-01: **FULL COLD HERMETICITY (Gradle) — DONE. The Gradle distribution + ALL
   AGP/Kotlin/AndroidX/Maven dependencies are now baked into the image as an offline
   `GRADLE_USER_HOME=/opt/gradle-home`; run.sh builds both APKs with that home + `--offline`,

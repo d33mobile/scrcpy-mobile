@@ -99,9 +99,23 @@ This is honest WIP. What is **not** yet covered:
 
 ## Building & running the end-to-end test
 
-The whole thing is one command. The image is hermetic — all build dependencies are
-baked into `e2e/Dockerfile`, and the e2e itself runs the inner container with
-`--network none` (no runtime apt / Maven / SDK fetches).
+The whole thing is one command. The hermeticity model has two phases:
+
+- **Image build (`docker build`, networked, one-time).** Everything the run needs
+  is baked into `scrcpy-e2e:dev` by `e2e/Dockerfile`: the apt build tools, the
+  Android SDK / NDK / CMake / emulator, the pinned native sources (FFmpeg
+  `release/6.0`, SDL2 2.32.8, OpenSSL 1.1.1w into `/opt/native-src`), and an offline
+  Gradle home (`GRADLE_USER_HOME=/opt/gradle-home`) seeded with the `gradle-8.9`
+  distribution plus every AGP / Kotlin / AndroidX Maven dependency. This step is the
+  only one that touches the network, and it only runs once (the layers are cached).
+- **The e2e run itself is fully offline.** `e2e/run.sh` runs the inner container with
+  `--network none` by default — no flag needed. The native stack cross-compiles from
+  the baked sources, and both APKs build `--offline` from the baked Gradle home, so
+  any un-baked input fails loudly instead of silently fetching. This was proven by a
+  from-absolute-scratch run (gradle volume removed + native caches/outputs cleared,
+  image only) under `--network none` reaching the SUCCESS banner with 5/5
+  coordinate-faithful taps and zero network fetches. (Set `E2E_ALLOW_NET=1` only to
+  re-prime / debug against the network.)
 
 - **From a clone, targeting the `d-claude` build host over SSH:**
 
@@ -125,9 +139,10 @@ target app), boots emulators B (5554) and A (5556), bridges B's adbd, drives A's
 connect flow, waits for a stable stream, then injects taps on A and asserts B
 received each at the expected coordinate. Exit 0 only if the whole chain passes.
 
-**Requirements: Docker + `/dev/kvm` only.** The x86_64 emulators need KVM hardware
-acceleration. Artifacts (logcat A+B, screenshots of both emulators, the native
-build log, and the per-tap evidence table) land in `e2e/artifacts/`. See
+**Requirements at run time: Docker + `/dev/kvm` only — no network needed.** The
+x86_64 emulators need KVM hardware acceleration. Artifacts (logcat A+B, screenshots
+of both emulators, the native build log, and the per-tap evidence table) land in
+`e2e/artifacts/`. See
 [`e2e/README.md`](e2e/README.md) for the pinned SDK/NDK/emulator versions and image
 details.
 
