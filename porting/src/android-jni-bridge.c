@@ -27,6 +27,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
 #include <android/log.h>
 
 #include "scrcpy-porting.h"   // int scrcpy_main(int, char**); enum ScrcpyStatus
@@ -35,6 +37,87 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  SCRCPY_LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  SCRCPY_LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, SCRCPY_LOG_TAG, __VA_ARGS__)
+
+// scrcpy installs its own SDL log handler (sc_sdl_log_print) that writes every
+// diagnostic to stdout/stderr via fprintf. On Android those fds are discarded,
+// so scrcpy's own connect/server/tunnel errors are INVISIBLE in logcat. Redirect
+// stdout+stderr into a pipe and pump it to logcat under the "scrcpy" tag so the
+// native client's diagnostics (and any failure reason) are observable. Idempotent.
+static void *
+stdio_pump(void *arg) {
+    int fd = (int) (intptr_t) arg;
+    char buf[512];
+    size_t used = 0;
+    ssize_t n;
+    while ((n = read(fd, buf + used, sizeof(buf) - 1 - used)) > 0) {
+        used += (size_t) n;
+        buf[used] = '\0';
+        char *start = buf, *nl;
+        while ((nl = strchr(start, '\n')) != NULL) {
+            *nl = '\0';
+            __android_log_write(ANDROID_LOG_INFO, SCRCPY_LOG_TAG, start);
+            start = nl + 1;
+        }
+        // Shift any partial line to the front.
+        used = strlen(start);
+        memmove(buf, start, used + 1);
+        if (used == sizeof(buf) - 1) {   // overlong line; flush it
+            __android_log_write(ANDROID_LOG_INFO, SCRCPY_LOG_TAG, buf);
+            used = 0;
+        }
+    }
+    return NULL;
+}
+
+static void
+redirect_stdio_to_logcat(void) {
+    static int done = 0;
+    if (done) {
+        return;
+    }
+    done = 1;
+
+    // Also tee scrcpy's stdout/stderr to a file under $HOME (the app's writable
+    // cacheDir) so the diagnostics survive even if logd/the pump races with a
+    // fast scrcpy_main exit — the harness pulls $HOME/scrcpy-stdio.log.
+    const char *home = getenv("HOME");
+    if (home && *home) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/scrcpy-stdio.log", home);
+        int lf = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (lf >= 0) {
+            setvbuf(stdout, NULL, _IONBF, 0);
+            setvbuf(stderr, NULL, _IONBF, 0);
+            dup2(lf, STDOUT_FILENO);
+            dup2(lf, STDERR_FILENO);
+            close(lf);
+            LOGI("redirect_stdio_to_logcat: stdout/stderr -> %s", path);
+            return;
+        }
+        LOGW("redirect_stdio_to_logcat: open(%s) failed: %s", path,
+             strerror(errno));
+    }
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        LOGW("redirect_stdio_to_logcat: pipe() failed: %s", strerror(errno));
+        return;
+    }
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    dup2(pipefd[1], STDOUT_FILENO);
+    dup2(pipefd[1], STDERR_FILENO);
+    close(pipefd[1]);
+    pthread_t t;
+    if (pthread_create(&t, NULL, stdio_pump, (void *) (intptr_t) pipefd[0]) != 0) {
+        LOGW("redirect_stdio_to_logcat: pthread_create failed");
+        close(pipefd[0]);
+        return;
+    }
+    pthread_detach(t);
+    LOGI("redirect_stdio_to_logcat: stdout/stderr -> logcat tag '%s'",
+         SCRCPY_LOG_TAG);
+}
 
 // Cached JavaVM, captured in JNI_OnLoad, used to forward status to Java.
 static JavaVM *g_vm = NULL;
@@ -165,6 +248,44 @@ Java_net_scrcpy_android_ScrcpyActivity_nativeSetHome(JNIEnv *env, jclass clazz,
     (*env)->ReleaseStringUTFChars(env, jhome, home);
 }
 
+// JNIEXPORT void Java_net_scrcpy_android_ScrcpyActivity_nativeSetServerPath(String)
+// Sets the SCRCPY_SERVER_PATH env to a caller-provided path to the bundled
+// scrcpy-server file. scrcpy's get_server_path() reads SCRCPY_SERVER_PATH and
+// pushes that file to /data/local/tmp/scrcpy-server.jar on the target device.
+// On Android there is no compiled-in install prefix that would hold the server,
+// so the app must point scrcpy at the server it ships as an asset (copied to its
+// filesDir). This mirrors the iOS app's setupScrcpyEnvs (ScrcpyADBClient.m).
+// Called from ScrcpyActivity.onCreate() — BEFORE SDL starts the scrcpy_main
+// thread — so server.c sees the env when it runs.
+JNIEXPORT void JNICALL
+Java_net_scrcpy_android_ScrcpyActivity_nativeSetServerPath(JNIEnv *env,
+                                                           jclass clazz,
+                                                           jstring jpath) {
+    (void) clazz;
+    if (!jpath) {
+        LOGW("nativeSetServerPath: null path");
+        return;
+    }
+    const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
+    if (!path) {
+        return;
+    }
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+        if (setenv("SCRCPY_SERVER_PATH", path, 1) == 0) {
+            LOGI("nativeSetServerPath: SCRCPY_SERVER_PATH=%s (%lld bytes)",
+                 path, (long long) st.st_size);
+        } else {
+            LOGE("nativeSetServerPath: setenv(SCRCPY_SERVER_PATH,%s) failed: %s",
+                 path, strerror(errno));
+        }
+    } else {
+        LOGE("nativeSetServerPath: '%s' is not a regular file (scrcpy push "
+             "will fail)", path);
+    }
+    (*env)->ReleaseStringUTFChars(env, jpath, path);
+}
+
 // JNIEXPORT jint Java_net_scrcpy_android_NativeBridge_runScrcpy(String[] args)
 // Runs scrcpy_main on the calling thread (the app calls this from a worker
 // Thread). Blocks until scrcpy_main returns. Returns the int exit code, or -1 on
@@ -205,6 +326,7 @@ Java_net_scrcpy_android_NativeBridge_runScrcpy(JNIEnv *env, jclass clazz,
 __attribute__((visibility("default")))
 JNIEXPORT int
 scrcpy_android_main(int argc, char **argv) {
+    redirect_stdio_to_logcat();
     LOGI("scrcpy_android_main: argc=%d", argc);
     for (int i = 0; i < argc; i++) {
         LOGI("scrcpy_android_main: argv[%d]=%s", i, argv[i] ? argv[i] : "(null)");

@@ -2,7 +2,9 @@ package net.scrcpy.android
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import org.libsdl.app.SDLActivity
+import java.io.File
 
 /**
  * Runs scrcpy under SDL's Android infrastructure.
@@ -35,9 +37,40 @@ class ScrcpyActivity : SDLActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         nativeSetHome(cacheDir.absolutePath)
+        nativeSetServerPath(deployServer())
     }
 
     private external fun nativeSetHome(home: String)
+
+    /**
+     * Sets SCRCPY_SERVER_PATH in the native environment. scrcpy reads this env
+     * (server.c: get_server_path) to locate the local scrcpy-server file and
+     * `adb push`es it to /data/local/tmp/scrcpy-server.jar on the target. There
+     * is no install prefix on Android, so the app ships the server as an asset
+     * and points scrcpy at the copy in its filesDir. Mirrors iOS setupScrcpyEnvs.
+     */
+    private external fun nativeSetServerPath(path: String)
+
+    /**
+     * Copy the bundled scrcpy-server asset into the app's filesDir (an
+     * app-readable path the native lib can stat/read) and return its absolute
+     * path. Re-copies if the asset size differs (cheap, idempotent across runs).
+     */
+    private fun deployServer(): String {
+        val dest = File(filesDir, SERVER_FILENAME)
+        try {
+            assets.open(SERVER_FILENAME).use { input ->
+                val bytes = input.readBytes()
+                if (!dest.exists() || dest.length() != bytes.size.toLong()) {
+                    dest.outputStream().use { it.write(bytes) }
+                }
+                Log.i("scrcpy", "deployServer: $dest (${dest.length()} bytes)")
+            }
+        } catch (t: Throwable) {
+            Log.e("scrcpy", "deployServer: failed to stage scrcpy-server asset", t)
+        }
+        return dest.absolutePath
+    }
 
     /**
      * Load order (each is `System.loadLibrary`'d by SDL.loadLibrary before the
@@ -69,7 +102,13 @@ class ScrcpyActivity : SDLActivity() {
     override fun getArguments(): Array<String> {
         val host = intent.getStringExtra(EXTRA_HOST)?.takeIf { it.isNotBlank() } ?: "127.0.0.1"
         val port = intent.getStringExtra(EXTRA_PORT)?.takeIf { it.isNotBlank() } ?: "5555"
-        return arrayOf(
+        // --no-audio: the AVD/emulator has no usable audio-capture HAL, so the
+        // server's audio capture fails ("Audio capture error") and aborts the
+        // whole session before it reaches Connected. Audio is optional for the
+        // remote-view/control path; disable it (overridable via the "noAudio"
+        // extra). Without it, scrcpy never gets to ScrcpyStatusConnected here.
+        val noAudio = intent.getBooleanExtra(EXTRA_NO_AUDIO, true)
+        val args = mutableListOf(
             "--tcpip=$host:$port",
             "--video-codec=h264",
             "--video-bit-rate=4M",
@@ -80,11 +119,15 @@ class ScrcpyActivity : SDLActivity() {
             "--stay-awake",
             "--shortcut-mod=lctrl,rctrl,lalt,ralt",
         )
+        if (noAudio) args.add("--no-audio")
+        return args.toTypedArray()
     }
 
     companion object {
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
+        const val EXTRA_NO_AUDIO = "noAudio"
+        private const val SERVER_FILENAME = "scrcpy-server"
 
         fun newIntent(context: android.content.Context, host: String, port: String): Intent =
             Intent(context, ScrcpyActivity::class.java)

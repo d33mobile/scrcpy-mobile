@@ -49,3 +49,21 @@ for lib in "${LIBS[@]}"; do
 done
 
 echo "[stage-natives] DONE: staged ${#LIBS[@]} libs into $DEST"
+
+# --- scrcpy-server asset ---------------------------------------------------
+# scrcpy locates the server to push to the target via SCRCPY_SERVER_PATH (see
+# server.c get_server_path). The app ships the server (v3.3.4, matching the
+# client) as an APK asset, copies it to filesDir at runtime, and sets the env.
+# The server binary is a build artifact — staged here from the existing
+# scrcpy-app/ADBClient/scrcpy-server, NOT committed under android-app (the
+# assets dir is gitignored).
+SERVER_SRC="${SCRCPY_SERVER_SRC:-$HERE/../scrcpy-app/ADBClient/scrcpy-server}"
+ASSET_DIR="$HERE/app/src/main/assets"
+if [[ -f "$SERVER_SRC" ]]; then
+    mkdir -p "$ASSET_DIR"
+    cp -v "$SERVER_SRC" "$ASSET_DIR/scrcpy-server"
+    echo "[stage-natives] DONE: staged scrcpy-server asset into $ASSET_DIR"
+else
+    echo "[stage-natives] ERROR: missing scrcpy-server at $SERVER_SRC" >&2
+    exit 1
+fi

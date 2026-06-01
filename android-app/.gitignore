@@ -9,3 +9,6 @@ captures/
 # Native libs are build artifacts staged by stage-natives.sh (see that script);
 # never commit them.
 app/src/main/jniLibs/
+# scrcpy-server is a build artifact staged into assets by stage-natives.sh
+# (copied from scrcpy-app/ADBClient/scrcpy-server); never commit it here.
+app/src/main/assets/scrcpy-server

@@ -24,6 +24,20 @@ class MainActivity : AppCompatActivity() {
         val portInput = findViewById<EditText>(R.id.portInput)
         val connectButton = findViewById<Button>(R.id.connectButton)
 
+        // Allow pre-filling the target via Intent extras (used by the e2e harness
+        // for deterministic input instead of fragile soft-keyboard typing):
+        //   am start -n net.scrcpy.android/.MainActivity --es host H --es port P
+        intent.getStringExtra("host")?.takeIf { it.isNotBlank() }?.let { hostInput.setText(it) }
+        intent.getStringExtra("port")?.takeIf { it.isNotBlank() }?.let { portInput.setText(it) }
+        // Optionally auto-connect once prefilled (harness convenience).
+        if (intent.getBooleanExtra("autoConnect", false)) {
+            val h = hostInput.text.toString().trim()
+            val p = portInput.text.toString().trim()
+            if (h.isNotEmpty() && p.isNotEmpty()) {
+                startActivity(ScrcpyActivity.newIntent(this, h, p))
+            }
+        }
+
         connectButton.setOnClickListener {
             val host = hostInput.text.toString().trim()
             val port = portInput.text.toString().trim()

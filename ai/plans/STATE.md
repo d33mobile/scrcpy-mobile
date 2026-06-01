@@ -50,10 +50,13 @@ cold run.
       channels (uiautomator text, logcat, run-as file); tap at (X,Y) -> recorded
       X,Y in device pixels with dx=dy=0. See progress log + `e2e/target-app/`,
       `e2e/lib-target.sh`.**
-- [ ] Drive A: launch MainActivity → enter B's reachable host:port → Connect →
+- [x] Drive A: launch MainActivity → enter B's reachable host:port → Connect →
       ScrcpyActivity; confirm via A's logcat the session reaches Connected
       (ScrcpyUpdateStatus Connected) and scrcpy-server is running on B (pidof /
-      dumpsys on B).
+      dumpsys on B). **DONE 2026-06-01 — A's in-app scrcpy connects to B at
+      `10.0.2.2:6555`, PUSHES + LAUNCHES scrcpy-server on B, reaches Connected,
+      and renders B's screen. 2/2 runs green. See progress log +
+      `e2e/m3-connect.sh`, `e2e/m3-build-and-connect.sh`.**
 - [ ] Full GUI automation: with uiautomator/adb `input` ON EMULATOR A, tap a known
       coordinate over the rendered remote-view surface; map it to the expected
       coordinate on B; assert via B (uiautomator/dumpsys/screencap) that B received
@@ -66,6 +69,111 @@ cold run.
       incl. one cold run; 100% pass. Capture evidence.
 
 ### Progress log
+- 2026-06-01: **M3 task 3 DONE — A's app drives a REAL scrcpy session to B over
+  ADB-over-TCP: connects to `10.0.2.2:6555`, pushes scrcpy-server to B, launches it
+  (`app_process com.genymobile.scrcpy.Server 3.3.4`), reaches Connected, and renders
+  B's screen. PASS 2/2 runs.**
+  **SERVER-BUNDLING MECHANISM (the gap the brief flagged):** scrcpy locates the
+  server to push via the `SCRCPY_SERVER_PATH` env (scrcpy/app/src/server.c
+  `get_server_path` → `sc_adb_push` to `/data/local/tmp/scrcpy-server.jar` on B).
+  Android has no install prefix, so the app SHIPS the server (v3.3.4, matching the
+  client) as an APK ASSET, copies it to filesDir at runtime, and sets the env —
+  mirroring iOS `ScrcpyADBClient.m setupScrcpyEnvs`. Concretely:
+   • `android-app/stage-natives.sh` now also copies
+     `scrcpy-app/ADBClient/scrcpy-server` → `app/src/main/assets/scrcpy-server` at
+     build time (the asset is a build artifact, gitignored — NOT committed under
+     android-app; the binary stays only in its existing tracked location).
+   • `ScrcpyActivity.onCreate()` calls `deployServer()` (copies the asset to
+     `filesDir/scrcpy-server`, idempotent) then `nativeSetServerPath(path)`.
+   • New JNI `Java_..._ScrcpyActivity_nativeSetServerPath` (android-jni-bridge.c):
+     `setenv("SCRCPY_SERVER_PATH", path, 1)` after verifying the file — set BEFORE
+     SDL starts the scrcpy_main thread, so server.c sees it.
+  **CONNECT PARAMS:** A's app connects to **host=`10.0.2.2` port=`6555`** (the
+  lib-net socat bridge `0.0.0.0:6555 -> 127.0.0.1:5555` fronting B's adbd).
+  ScrcpyActivity builds `--tcpip=10.0.2.2:6555 --video-codec=h264 --video-bit-rate=4M
+  --video-buffer=0 --print-fps --stay-awake --shortcut-mod=... --no-audio` (the
+  in-process adb host does `adb connect`, push, reverse tunnel, app_process). The
+  reverse tunnel works through the socat bridge with NO `--force-adb-forward`.
+  **VERBATIM EVIDENCE (e2e/artifacts/, run 5, exit 0):**
+  A-side scrcpy in-process client log (`A-scrcpy-stdio.log`):
+  ```
+  INFO: Connecting to 10.0.2.2:6555...
+  connected to 10.0.2.2:6555
+  INFO: Connected to 10.0.2.2:6555
+  > adb -s 10.0.2.2:6555 push /data/user/0/net.scrcpy.android/files/scrcpy-server /data/local/tmp/scrcpy-server.jar
+  /data/local/tmp/scrcpy-server.jar: 1 file pushed ... (91012 bytes in 0.006s)
+  > adb -s 10.0.2.2:6555 reverse localabstract:scrcpy_49c3c89f tcp:27183
+  > adb -s 10.0.2.2:6555 shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 3.3.4 scid=... video_bit_rate=4000000 audio=false stay_awake=true
+  > scrcpy-server app_process started
+  [server] INFO: Device: [Google] google sdk_gphone_x86_64 (Android 11)
+  INFO: Texture: 1080x1920 / INFO: FPS counter started / INFO: 6 fps ...
+  ```
+  scrcpy-server RUNNING on B (`evidence-bserver.txt`, `adb -s emulator-5554 ps -A`):
+  ```
+  shell  3999  3997 ... do_epoll_wait  S app_process
+  shell  4077  3999 ... pipe_read      S app_process
+  ```
+  B-side server logcat (`logcat-B-full.txt`):
+  ```
+  D AndroidRuntime: Calling main entry com.genymobile.scrcpy.Server
+  I scrcpy  : Device: [Google] google sdk_gphone_x86_64 (Android 11)
+  ```
+  A-side porting status callback (`logcat-A-full.txt`): `onScrcpyStatus: status=2
+  message=SDL Inited` (×2) then `onScrcpyStatus: status=3 message=SDL Window Created`
+  — status=3 only fires AFTER a successful server connect + first video frame, so it
+  is a reliable post-connection marker; video streams (continuous `N fps`). No
+  UnsatisfiedLinkError / dlopen-fail / SIGSEGV / SIGABRT / FATAL / ANR on A.
+  **BUGS FOUND + FIXED (instrumented, root-caused — not assumed):**
+   1. **Server not bundled** (the brief's predicted gap): without SCRCPY_SERVER_PATH
+      scrcpy can't push the server. Fixed via the asset+deploy+setenv mechanism above.
+   2. **scrcpy diagnostics invisible:** scrcpy installs its own SDL log handler that
+      `fprintf`s to stdout/stderr, which Android discards — so ALL connect/server/
+      tunnel errors were silent. Added `redirect_stdio_to_logcat()` in
+      android-jni-bridge.c (tees stdout+stderr to `$HOME/scrcpy-stdio.log` in the
+      app's cacheDir, pulled by the harness via `run-as`). This is what made the next
+      two bugs diagnosable.
+   3. **Harness mis-routed the port into the host field:** the old fragile
+      soft-keyboard typing put `6555` into the HOST EditText → scrcpy got
+      `--tcpip=6555` → "Connecting to 6555:5555" → `failed to resolve host '6555'`.
+      Fixed by making `MainActivity` accept `host`/`port` Intent extras and prefill
+      the fields (`am start ... --es host 10.0.2.2 --es port 6555`), then tap Connect
+      — deterministic, no typing. (Screenshot proof of the old bug:
+      `screen-A-after.png` from the failing run showed host=6555 port=5555.)
+   4. **Audio capture aborted the session:** with audio on, the server hit
+      `ERROR: Audio capture error` (the AVD has no audio-capture HAL) and tore down
+      the WHOLE session before Connected. Added `--no-audio` (overridable via the
+      `noAudio` extra, default true) to ScrcpyActivity's argv.
+   5. **Harness `set -e`/pipefail abort:** a field-verify `grep | grep | sed` that
+      found nothing returned non-zero in a `$(...)` and killed the script before the
+      Connect tap; wrapped non-fatal + added a UI-dump retry loop.
+  **KNOWN QUIRK (documented, not blocking):** the porting layer's
+  `sc_server_on_connected_hijack` (scrcpy-porting.c) — which would emit
+  `ScrcpyStatusConnected` (status=6) — does NOT surface in logcat on this Android
+  build (the bridge's own pre-scrcpy_main `__android_log_print` LOGIs are likewise
+  swallowed, while ScrcpyUpdateStatus status=2/3 DO appear — root cause not yet
+  pinned; the preprocessed .o DOES contain the rewritten `sc_server_init_hijack`
+  call, so the macro applies). It does NOT affect the session: scrcpy's OWN
+  authoritative `INFO: Connected to <host:port>` line + the server running on B +
+  status=3 (post-connect window) are the Connected proof the harness asserts on.
+  Added a one-line diagnostic LOGI in the hijack for future investigation. A
+  follow-up could route status=6 through a path that reliably logs (e.g. emit it
+  from the SC_EVENT_SERVER_CONNECTED handler).
+  **HARNESS:** new `e2e/m3-connect.sh` (boots both emulators reusing run.sh's AVD/
+  flags/boot-wait, `ensure_b_reachable` → 10.0.2.2:6555 socat bridge, installs the
+  APK on A, `am start MainActivity --es host/port` → tap Connect, observes,
+  asserts scrcpy-Connected + server-on-B + no-crash) and `e2e/m3-build-and-connect.sh`
+  (INNER driver: apt-installs the build tools missing from the image —
+  make/meson/nasm/golang/rsync/socat/pkg-config — builds the full native stack
+  `make android-libs`, then hands off to m3-connect.sh). One `docker run --device
+  /dev/kvm`, mem=1536 ×2, self-cleaning; `--rm` container auto-removed; emulators
+  killed; AVDs deleted; socat bridge stopped; mf-e2e-*/redroid/ws-scrcpy untouched;
+  host clean. **Committed:** android-jni-bridge.c (nativeSetServerPath +
+  redirect_stdio_to_logcat), ScrcpyActivity.kt (deploy server asset + --no-audio),
+  MainActivity.kt (host/port extras prefill), stage-natives.sh (stage server asset),
+  scrcpy-porting.c (hijack diagnostic LOGI), android-app/.gitignore (ignore the
+  assets/scrcpy-server build artifact), e2e/m3-connect.sh, e2e/m3-build-and-connect.sh,
+  STATE. NOT committed: built .so / APK / staged jniLibs / assets/scrcpy-server /
+  artifacts (all gitignored).
 - 2026-06-01: **M3 task 2 DONE — deterministic input target app built, installed,
   launched, and PROVEN on all three state channels; recorded tap coords match the
   `input tap` coords exactly (dx=dy=0).**

@@ -7,6 +7,13 @@
 
 #include "scrcpy-porting.h"
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define SC_PORT_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "scrcpy", __VA_ARGS__)
+#else
+#define SC_PORT_LOGI(...) ((void) 0)
+#endif
+
 #define sc_server_init(...)     sc_server_init_hijack(__VA_ARGS__)
 //#define sc_delay_buffer_init(...)     sc_delay_buffer_init_hijack(__VA_ARGS__)
 #define SDL_Init(...)     SDL_Init_hijack(__VA_ARGS__)
@@ -59,6 +66,7 @@ sc_server_init(struct sc_server *server, const struct sc_server_params *params,
 bool
 sc_server_init_hijack(struct sc_server *server, const struct sc_server_params *params,
               const struct sc_server_callbacks *cbs, void *cbs_userdata) {
+    SC_PORT_LOGI("sc_server_init_hijack: installing hijacked callbacks");
     static const struct sc_server_callbacks cbs_fixed = {
         .on_connection_failed = sc_server_on_connection_failed_hijack,
         .on_connected = sc_server_on_connected_hijack,
