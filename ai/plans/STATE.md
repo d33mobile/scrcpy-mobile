@@ -43,12 +43,105 @@ client (connection attempt visible) without crashing.
 - [x] Minimal UI: a screen to enter target `host:port` + Connect, then hand off to
       the SDL surface (remote view). Wire touches on the surface into scrcpy control
       (handled by the native SDL event loop).
-- [ ] Build the APK in `scrcpy-e2e:dev`; install it on an x86_64 emulator (use the
+- [x] Build the APK in `scrcpy-e2e:dev`; install it on an x86_64 emulator (use the
       e2e harness emulator A) and confirm via logcat that the app loads
       `libscrcpy.so` and enters `scrcpy_main` (a connection attempt to a `host:port`
       is logged) WITHOUT crashing. Capture logcat evidence.
 
 ### Progress log
+- 2026-06-01: **M2 task 4 done — APK launched on a headless x86_64 emulator;
+  libscrcpy.so loads, scrcpy_main is entered, the in-process adb host runs through
+  its connection path, NO crash. M2 COMPLETE. Two REAL native bugs found + fixed
+  along the way.**
+  **Harness:** new single-emulator helper **`e2e/launch-app.sh`** (the M3-ready
+  counterpart to `e2e/run.sh`'s two-emulator harness): inside `scrcpy-e2e:dev`
+  with `--device /dev/kvm` it stages natives + `assembleDebug`s the APK, boots ONE
+  pinned-v33.1.24 emulator (same AVD/flags/boot-wait as run.sh, mem=1536), installs
+  the APK, drives the REAL user flow (`am start` the exported MainActivity → set
+  host/port fields → `uiautomator dump`-located tap on Connect → ScrcpyActivity),
+  captures 30s of filtered+full logcat to /artifacts, and PASS/FAILs on
+  UnsatisfiedLinkError/dlopen/SIGSEGV/SIGABRT/FATAL/ANR vs scrcpy-entry evidence.
+  (ScrcpyActivity is correctly `exported=false`, so a direct `am start` of it gives
+  `SecurityException: not exported from uid` — hence the via-MainActivity flow.)
+  **BUG 1 (FATAL, fixed): adb auth aborts — `Cannot mkdir '/data/.android'`.**
+  First launch: libs loaded + scrcpy_main entered, then SIGABRT on the
+  `scrcpy-server` thread. Verbatim:
+  ```
+  F libc  : Fatal signal 6 (SIGABRT) ... in tid N (scrcpy-server), pid M (SDLActivity)
+  F DEBUG : Abort message: 'Cannot mkdir '/data/.android': Permission denied'
+  F DEBUG : #04 ... adb_get_android_dir_path()+515
+  F DEBUG : #05 ... get_user_key_path()+34
+  F DEBUG : #06 ... adb_auth_init()+63
+  F DEBUG : #07 ... adb_server_main(...)
+  F DEBUG : #08 ... launch_server_thread(...)
+  ```
+  Root cause: scrcpy's in-process adb host (`launch_server`→`adb_server_main`→
+  `adb_auth_init`) derives its key store from `adb_get_homedir_path()` =
+  `getenv("HOME")` ?: passwd home; an Android app uid's passwd home is the
+  unwritable `/data`, so `mkdir("$HOME/.android")` FATAL-aborts. **Fix:** point
+  `$HOME` at the app's writable `cacheDir` BEFORE the native thread runs. Added
+  `Java_net_scrcpy_android_ScrcpyActivity_nativeSetHome(String)` to
+  `porting/src/android-jni-bridge.c` (`setenv("HOME", path, 1)` after verifying
+  it's a writable dir) + a defensive `ensure_writable_home()` (falls back to
+  `$TMPDIR`) called at the top of both `scrcpy_android_main` and `runScrcpy`;
+  `ScrcpyActivity.onCreate` calls `nativeSetHome(cacheDir.absolutePath)` right after
+  `super.onCreate()` (SDLActivity.loadLibraries has run, so the symbol is bound;
+  the SDL thread that runs scrcpy_main starts later in handleResume). (The vendored
+  AOSP `adb_utils.cpp` is NOT patched — fixed purely via the env from our side.)
+  **BUG 2 (FATAL, fixed): OpenSSL↔BoringSSL allocator collision — Scudo abort.**
+  After the HOME fix, adb_get_android_dir_path() succeeded and the flow advanced one
+  step further, into `load_key()`/`hash_key()`, then aborted. Verbatim:
+  ```
+  F DEBUG : Abort message: 'Scudo ERROR: misaligned pointer when deallocating address 0x...'
+  F DEBUG : #04 ... scudo::reportMisalignedPointer(...)
+  F DEBUG : #05 ... scudo::Allocator<...>::deallocate(...)
+  F DEBUG : #06 ... load_key(std::string const&)+214        // = hash_key()'s OPENSSL_free(pubkey)
+  F DEBUG : #07 ... adb_auth_init()+295
+  F DEBUG : #08 ... adb_server_main(...)
+  ```
+  Root cause: the scrcpy-android link pulled in BOTH the standalone OpenSSL
+  (`libssl.a`/`libcrypto.a`, built in M1 t4) AND adb's bundled **BoringSSL** (inside
+  `libadb-full.a`), reconciled with `-Wl,--allow-multiple-definition`. That let lld
+  resolve crypto symbols per-symbol from EITHER provider, so adb's
+  `i2d_RSA_PUBKEY` (BoringSSL `OPENSSL_malloc`) and `OPENSSL_free` could bind to
+  DIFFERENT allocators — freeing a BoringSSL-malloc'd buffer with the wrong free
+  trips bionic Scudo's misaligned-pointer check. (The M1 link comment literally
+  flagged this as a TODO.) **Fix:** scrcpy itself has NO OpenSSL/TLS dependency
+  (verified: no `<openssl>`/`SSL_`/`EVP_` refs in `scrcpy/app/src`; the iOS link
+  doesn't link libssl/libcrypto either), and adb is the only crypto user — so
+  **dropped `libssl.a`+`libcrypto.a` from the link** in
+  `porting/scripts/scrcpy-android-CMakeLists.txt`, leaving BoringSSL as the sole,
+  self-consistent crypto provider. (`--allow-multiple-definition` kept defensively
+  for protobuf intra-archive overlaps; the crypto collision is gone.) APK shrank
+  26.5MB→24.3MB (no second crypto lib).
+  **RELINK (d-claude, `scrcpy-e2e:dev`, NDK 27.2.12479018, `make android-scrcpy
+  TARGET_ABI=x86_64`):** 70/70 ninja, MAKE_RC=0 after each fix; final
+  libscrcpy.so links clean without OpenSSL. APK rebuilt green (assembleDebug, 20s).
+  **PASS RUN (verbatim key logcat, emulator-5554, target `--tcpip=127.0.0.1:5555`):**
+  ```
+  V SDL    : Running main function scrcpy_android_main from library /data/app/.../lib/x86_64/libscrcpy.so
+  V SDL    : nativeRunMain()
+  I scrcpy : onScrcpyStatus: status=2 message=SDL Inited
+  I scrcpy : onScrcpyStatus: status=2 message=SDL Inited
+  I scrcpy : onScrcpyStatus: status=2 message=SDL Inited
+  V SDL    : Finished main function
+  V SDL    : SDLActivity thread ends
+  ```
+  Diagnostic greps over the FULL logcat: UnsatisfiedLinkError = none, dlopen
+  failure = none, **SIGSEGV/Fatal signal/SIGABRT/Scudo = 0 occurrences**, FATAL
+  EXCEPTION/ANR = none; app pid alive at +30s. So: **libscrcpy.so loaded (no link
+  error), `scrcpy_android_main`→`scrcpy_main` entered, SDL initialized, the
+  in-process adb host ran its `--tcpip=127.0.0.1:5555` connect path all the way
+  through `adb_auth_init` (the exact spot that aborted twice before) WITHOUT
+  crashing, and scrcpy returned/finished cleanly.** Harness exit 0; emulator killed,
+  throwaway container self-removed, unrelated mf-e2e/redroid/ws-scrcpy untouched.
+  Artifacts: `e2e/artifacts/{logcat-full.txt,logcat-scrcpy-launch.txt,
+  screen-after-launch.png}` (gitignored).
+  **Committed:** android-jni-bridge.c (nativeSetHome + ensure_writable_home),
+  ScrcpyActivity.kt (onCreate→nativeSetHome), scrcpy-android-CMakeLists.txt (drop
+  OpenSSL), e2e/launch-app.sh (new helper), STATE. NOT committed: relinked .so /
+  APK / staged jniLibs / artifacts (gitignored). **M2 accept criteria fully
+  satisfied → run M2 audit next.**
 - 2026-06-01: **M2 task 3 done — ScrcpyActivity (extends SDLActivity) runs scrcpy
   under SDL's Android infra; launcher UI (host/port + Connect) hands off to it;
   bridge exports `scrcpy_android_main`; relinked .so + APK build green.**

@@ -24,6 +24,9 @@
 #include <jni.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <errno.h>
 #include <android/log.h>
 
 #include "scrcpy-porting.h"   // int scrcpy_main(int, char**); enum ScrcpyStatus
@@ -35,6 +38,54 @@
 
 // Cached JavaVM, captured in JNI_OnLoad, used to forward status to Java.
 static JavaVM *g_vm = NULL;
+
+// Is `dir` an existing, writable directory?
+static int
+dir_is_writable(const char *dir) {
+    if (!dir || !*dir) {
+        return 0;
+    }
+    struct stat st;
+    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return 0;
+    }
+    return access(dir, W_OK) == 0;
+}
+
+// scrcpy's in-process adb host calls adb_get_android_dir_path(), which does
+// `mkdir("$HOME/.android")` and FATAL-aborts (SIGABRT) if it can't — fatal on an
+// Android app uid, whose default passwd home is the unwritable "/data". Ensure
+// HOME points at an app-writable dir BEFORE scrcpy_main runs so the adb auth key
+// store lands somewhere we can write.
+//
+// We never hardcode the package name in this generic lib: Android sets TMPDIR to
+// the app's per-uid cache dir (e.g. /data/user/0/<pkg>/cache) for every app
+// process, which is always app-writable. We honour an explicit, writable HOME if
+// one is already set; otherwise we derive it from TMPDIR.
+static void
+ensure_writable_home(void) {
+    const char *home = getenv("HOME");
+    if (dir_is_writable(home)) {
+        LOGI("ensure_writable_home: HOME=%s already writable", home);
+        return;
+    }
+
+    const char *tmpdir = getenv("TMPDIR");
+    if (!dir_is_writable(tmpdir)) {
+        LOGW("ensure_writable_home: neither HOME='%s' nor TMPDIR='%s' is a "
+             "writable dir; leaving HOME unset (adb auth may abort)",
+             home ? home : "(null)", tmpdir ? tmpdir : "(null)");
+        return;
+    }
+
+    if (setenv("HOME", tmpdir, 1) != 0) {
+        LOGE("ensure_writable_home: setenv(HOME,%s) failed: %s",
+             tmpdir, strerror(errno));
+        return;
+    }
+    LOGI("ensure_writable_home: set HOME=%s (from TMPDIR) for adb auth store",
+         tmpdir);
+}
 
 JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM *vm, void *reserved) {
@@ -83,6 +134,37 @@ free_argv(char **argv, int argc) {
     free(argv);
 }
 
+// JNIEXPORT void Java_net_scrcpy_android_ScrcpyActivity_nativeSetHome(String)
+// Sets the process $HOME to a caller-provided, app-writable directory (the app
+// passes its cacheDir). scrcpy's in-process adb host derives its auth key store
+// from $HOME/.android and FATAL-aborts if it can't create it; an Android app
+// uid's default passwd home is the unwritable "/data". The app calls this from
+// ScrcpyActivity.onCreate() — i.e. BEFORE SDL starts the native thread that runs
+// scrcpy_main — so the adb server thread sees a writable HOME.
+JNIEXPORT void JNICALL
+Java_net_scrcpy_android_ScrcpyActivity_nativeSetHome(JNIEnv *env, jclass clazz,
+                                                     jstring jhome) {
+    (void) clazz;
+    if (!jhome) {
+        LOGW("nativeSetHome: null path");
+        return;
+    }
+    const char *home = (*env)->GetStringUTFChars(env, jhome, NULL);
+    if (!home) {
+        return;
+    }
+    if (dir_is_writable(home)) {
+        if (setenv("HOME", home, 1) == 0) {
+            LOGI("nativeSetHome: HOME=%s (app-writable, for adb auth store)", home);
+        } else {
+            LOGE("nativeSetHome: setenv(HOME,%s) failed: %s", home, strerror(errno));
+        }
+    } else {
+        LOGW("nativeSetHome: '%s' is not a writable dir; HOME unchanged", home);
+    }
+    (*env)->ReleaseStringUTFChars(env, jhome, home);
+}
+
 // JNIEXPORT jint Java_net_scrcpy_android_NativeBridge_runScrcpy(String[] args)
 // Runs scrcpy_main on the calling thread (the app calls this from a worker
 // Thread). Blocks until scrcpy_main returns. Returns the int exit code, or -1 on
@@ -103,6 +185,7 @@ Java_net_scrcpy_android_NativeBridge_runScrcpy(JNIEnv *env, jclass clazz,
         LOGI("runScrcpy: argv[%d]=%s", i, argv[i]);
     }
 
+    ensure_writable_home();
     int rc = scrcpy_main(argc, argv);
 
     LOGI("runScrcpy: scrcpy_main returned %d", rc);
@@ -126,6 +209,7 @@ scrcpy_android_main(int argc, char **argv) {
     for (int i = 0; i < argc; i++) {
         LOGI("scrcpy_android_main: argv[%d]=%s", i, argv[i] ? argv[i] : "(null)");
     }
+    ensure_writable_home();
     int rc = scrcpy_main(argc, argv);
     LOGI("scrcpy_android_main: scrcpy_main returned %d", rc);
     return rc;

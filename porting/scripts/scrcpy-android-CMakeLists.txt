@@ -189,8 +189,17 @@ target_link_libraries(scrcpy PRIVATE
         ${DEPS}/libswscale.a
         ${DEPS}/libswresample.a
         ${DEPS}/libavutil.a
-        ${DEPS}/libssl.a
-        ${DEPS}/libcrypto.a
+        # NB: do NOT link the standalone OpenSSL (libssl.a/libcrypto.a) here.
+        # libadb-full.a statically bundles BoringSSL, and adb is the ONLY crypto
+        # user in this .so (scrcpy itself has no OpenSSL/TLS dependency — neither
+        # scrcpy/app/src nor the iOS link reference libssl/libcrypto). Linking
+        # both OpenSSL and BoringSSL made the linker (under
+        # --allow-multiple-definition) mix providers per-symbol, so adb's
+        # i2d_RSA_PUBKEY (BoringSSL OPENSSL_malloc) and OPENSSL_free could resolve
+        # to DIFFERENT allocators — freeing a pointer with the wrong allocator
+        # aborts at runtime with bionic Scudo "misaligned pointer when
+        # deallocating" inside load_key()/hash_key() during adb_auth_init(). With
+        # OpenSSL dropped, BoringSSL is the sole, self-consistent crypto provider.
         ${DEPS}/libadb-full.a
         -Wl,--end-group
         ${DEPS}/libSDL2.so
@@ -207,13 +216,12 @@ target_link_libraries(scrcpy PRIVATE
 # Allow unresolved weak/app-provided symbols to stay undefined at .so link time
 # (the M2 app provides strong overrides; the smoke exe & app supply the rest).
 #
-# --allow-multiple-definition: libadb-full.a statically bundles BoringSSL, which
-# exports the same X509_*/EVP_*/etc. crypto symbols as scrcpy's OpenSSL
-# (libcrypto.a). Both archives are in the link; lld would reject the overlap.
-# We let the first definition win (adb only uses its own bundled copy via its
-# own call sites; scrcpy's TLS-free adb-host path doesn't cross the boundary).
-# TODO(M1-followup): de-dup by hiding adb's BoringSSL symbols (localize/version
-# script) so there is exactly one crypto provider.
+# --allow-multiple-definition: kept defensively for any remaining intra-archive
+# symbol overlaps (e.g. protobuf objects bundled into libadb-full.a). The former
+# OpenSSL-vs-BoringSSL crypto-symbol collision that originally required this flag
+# is GONE now that the standalone OpenSSL is no longer linked (see the link list
+# above) — BoringSSL (in libadb-full.a) is the sole crypto provider, so crypto
+# symbols no longer have two definitions to choose between.
 # The Android NDK toolchain file forces -Wl,--no-undefined on shared libs. That
 # is too strict here: (a) libadb-full.a bundles protobuf objects that reference
 # abseil/utf8_range symbols not pulled into the archive (and not needed by the

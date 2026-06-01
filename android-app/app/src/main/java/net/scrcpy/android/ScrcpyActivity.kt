@@ -1,6 +1,7 @@
 package net.scrcpy.android
 
 import android.content.Intent
+import android.os.Bundle
 import org.libsdl.app.SDLActivity
 
 /**
@@ -21,6 +22,22 @@ import org.libsdl.app.SDLActivity
  * the `adb connect`), instead of the iOS app's pre-`adb connect` + `--serial`.
  */
 class ScrcpyActivity : SDLActivity() {
+
+    /**
+     * Point the native process $HOME at our app-writable cacheDir BEFORE SDL
+     * starts the thread that runs scrcpy_main. scrcpy's in-process adb host
+     * derives its auth key store from $HOME/.android and FATAL-aborts (SIGABRT)
+     * if it cannot create it; an app uid's default passwd home is the unwritable
+     * "/data". super.onCreate() has already run SDLActivity.loadLibraries() (which
+     * System.loadLibrary's libscrcpy.so, where this native method lives), so the
+     * symbol is bound by the time we call it here.
+     */
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        nativeSetHome(cacheDir.absolutePath)
+    }
+
+    private external fun nativeSetHome(home: String)
 
     /**
      * Load order (each is `System.loadLibrary`'d by SDL.loadLibrary before the
