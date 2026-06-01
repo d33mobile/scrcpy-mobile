@@ -31,7 +31,7 @@ calls `scrcpy_main` against a target and the app process loads + runs the native
 client (connection attempt visible) without crashing.
 
 ### Tasks
-- [ ] Integrate `libscrcpy.so` + deps (`libSDL2.so`, `libc++_shared.so`, the
+- [x] Integrate `libscrcpy.so` + deps (`libSDL2.so`, `libc++_shared.so`, the
       FFmpeg/openssl/adb already linked-in) + SDL Java glue
       (`porting/vendor/sdl-android-java` `org.libsdl.app.*`) into the android-app
       Gradle build (`jniLibs/x86_64` + `sourceSets`); app builds an APK that packages
@@ -49,6 +49,54 @@ client (connection attempt visible) without crashing.
       is logged) WITHOUT crashing. Capture logcat evidence.
 
 ### Progress log
+- 2026-06-01: **M2 task 1 done — native libs + SDL Java glue integrated into the
+  android-app Gradle build; APK packages all 3 .so + compiles `org.libsdl.app.*`.**
+  This is BUILD-INTEGRATION ONLY (no `scrcpy_main` call / no UI yet — that's M2
+  task 2/3); `MainActivity` left as-is (stub TextView).
+  **`android-app/app/build.gradle.kts` changes (all additive):**
+   • `defaultConfig.ndk { abiFilters += "x86_64" }` — packages only the x86_64 ABI
+     (arm64-v8a deferred to M4); without this AGP would warn/expect every ABI.
+   • `sourceSets.named("main")`: `java.srcDir("../../porting/vendor/sdl-android-java")`
+     — that dir is the source ROOT (`org/libsdl/app/*.java` under it), so the
+     `org.libsdl.app` package compiles straight into the app. Verified the glue is
+     self-contained: single package decl `org.libsdl.app`, NO `R.*` resource refs,
+     NO `BuildConfig`, no non-android/java/libsdl imports → compiles clean with the
+     stub MainActivity still as launcher (SDLActivity not yet used). Also pinned
+     `jniLibs.srcDir("src/main/jniLibs")` (AGP default, explicit).
+  **Staging mechanism (reproducible, .so never committed):** new
+  **`android-app/stage-natives.sh`** (executable) — copies the 3 prebuilt libs
+  (`libscrcpy.so`, `libSDL2.so`, `libc++_shared.so`) from
+  `output/android/<ABI>` into `app/src/main/jniLibs/<ABI>/` BEFORE `./gradlew
+  assembleDebug`. Args: `stage-natives.sh [OUTPUT_DIR] [ABI]` (defaults
+  `../output/android/x86_64`, `x86_64`); errors out if any lib is missing. The
+  e2e/CI path calls it before gradlew. `android-app/.gitignore` now ignores
+  `app/src/main/jniLibs/` (the .so are gitignored build artifacts; root .gitignore
+  already swallows `*.so`/`output`). Verified `git check-ignore
+  app/src/main/jniLibs/x86_64/libscrcpy.so` → ignored.
+  **BUILT GREEN on d-claude in `scrcpy-e2e:dev`** (persistent `scrcpy-gradle-cache`
+  volume): rsync'd `android-app/` + `porting/vendor/` to
+  `/srv/work/scrcpy-mobile-e2e`, ran `./stage-natives.sh /workspace/output/android/
+  x86_64 x86_64 && ./gradlew --no-daemon assembleDebug` → **BUILD SUCCESSFUL in
+  44s** (`:app:compileDebugJavaWithJavac` compiled the SDL glue;
+  `:app:mergeDebugNativeLibs` packaged the .so; only a benign "Unable to strip"
+  note for the 3 prebuilt .so). APK = `app/build/outputs/apk/debug/app-debug.apk`
+  (26.5 MB, up from the 3.18 MB stub APK).
+  **VERIFIED — APK CONTAINS the libs** (`unzip -l app-debug.apk | grep
+  "lib/x86_64/"`):
+  ```
+    6405544  lib/x86_64/libSDL2.so
+    1617608  lib/x86_64/libc++_shared.so
+   15252168  lib/x86_64/libscrcpy.so
+  ```
+  **VERIFIED — SDL glue compiled into the dex:** APK has classes{,2,3}.dex; the
+  multidex map in classes3.dex lists `Lorg/libsdl/app/SDLActivity;`,
+  `Lorg/libsdl/app/SDLSurface;`, `Lorg/libsdl/app/SDLAudioManager;`,
+  `Lorg/libsdl/app/SDLControllerManager;`, `Lorg/libsdl/app/SDLMain;`, the four
+  `Lorg/libsdl/app/HIDDevice*;` and `Lnet/scrcpy/android/MainActivity;` — i.e. the
+  full vendored `org.libsdl.app` package + the app's launcher Activity.
+  **Committed** (build.gradle.kts, .gitignore, stage-natives.sh, STATE).
+  **NOT committed:** the staged jniLibs/.so (gitignored) and the APK/build dir.
+  MainActivity untouched.
 - 2026-06-01: **M1 AUDIT PASSED.** Skeptical audit re-verified everything with
   commands on d-claude (`scrcpy-e2e:dev`, NDK 27.2.12479018), did not trust the
   cached `.so`. Evidence:

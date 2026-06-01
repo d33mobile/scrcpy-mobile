@@ -6,3 +6,6 @@ local.properties
 .kotlin/
 captures/
 .cxx/
+# Native libs are build artifacts staged by stage-natives.sh (see that script);
+# never commit them.
+app/src/main/jniLibs/
