@@ -65,7 +65,9 @@ run is green; then the goal is declared fully realized.
 - [ ] FINAL goal audit: clear caches, run `bash e2e/run.sh` cold once more green;
       confirm hermeticity + docs; then declare the locked goal FULLY REALIZED in
       STATE.md. (When this passes, the loop should stop.)
-- [ ] **FIX HERMETICITY ON A COLD CACHE (audit FAIL 2026-06-01).** The native build is
+- [x] **FIX HERMETICITY ON A COLD CACHE (audit FAIL 2026-06-01) — DONE 2026-06-01** (native
+      SOURCE now baked into the image + scripts copy/extract from it offline; cold
+      `--network none` native rebuild proven green, see progress log). The native build was
       NOT hermetic: on a truly cold cache the three native deps fetch their SOURCE over
       the network — `porting/scripts/make-ffmpeg-android.sh:70` `git clone --depth 1
       --branch release/6.0 https://github.com/FFmpeg/FFmpeg.git`,
@@ -94,6 +96,90 @@ run is green; then the goal is declared fully realized.
       cold native build still fetches FFmpeg/SDL2/OpenSSL source over the network.
 
 ### Progress log
+- 2026-06-01: **HERMETIC NATIVE SOURCE — DONE. The native build no longer fetches SOURCE
+  over the network: the three native deps are baked into the e2e image and the build
+  scripts copy/extract from them offline. PROVEN by a cold-native `--network none` e2e that
+  rebuilt the WHOLE native stack from the pre-staged source with ZERO network and reached the
+  SUCCESS banner + 5/5 coordinate-faithful taps, exit 0.**
+  **WHAT WAS VENDORED INTO THE IMAGE (e2e/Dockerfile, one new layer APPENDED AFTER the
+  SDK/NDK + apt layers so they stay CACHED):** `ENV NATIVE_SRC_DIR=/opt/native-src` + a RUN
+  that, at IMAGE-build time (network allowed), populates — using the EXACT same URLs/versions
+  the scripts use, so only provenance changes:
+   • `git clone --depth 1 --branch release/6.0 https://github.com/FFmpeg/FFmpeg.git
+     /opt/native-src/ffmpeg` (release/6.0, HEAD `a981a06`, 65M).
+   • `wget https://www.libsdl.org/release/SDL2-2.32.8.tar.gz -> /opt/native-src/SDL2-2.32.8.tar.gz`
+     (7.3M).
+   • `wget .../openssl-1.1.1w.tar.gz` (openssl.org old archive, GitHub release mirror fallback)
+     `-> /opt/native-src/openssl-1.1.1w.tar.gz` (9.5M). The same source serves BOTH x86_64 and
+     arm64-v8a (per-ABI build trees are copied from it).
+  **IMAGE REBUILD (d-claude, `docker build`): `real 0m17.6s` — layers #5..#9
+  (cmdline-tools, sdkmanager SDK+NDK+system-image, apt-base, baked apt, native-toolchain
+  apt) all CACHED; only the new `#10` native-src layer ran (10.8s: ffmpeg clone + 2 wgets).**
+  Verified in the rebuilt image:
+  ```
+  $ docker run --rm scrcpy-e2e:dev bash -lc 'ls -la /opt/native-src && du -sh /opt/native-src/*'
+  -rw-r--r-- 1 root root 7627356 ... SDL2-2.32.8.tar.gz
+  drwxr-xr-x 19 root root      38 ... ffmpeg
+  -rw-r--r-- 1 root root 9893384 ... openssl-1.1.1w.tar.gz
+  65M  /opt/native-src/ffmpeg     9.5M openssl-1.1.1w.tar.gz     7.3M SDL2-2.32.8.tar.gz
+  $ (cd /opt/native-src/ffmpeg && git describe --all)  -> heads/release/6.0  (HEAD a981a06)
+  $ echo $NATIVE_SRC_DIR  -> /opt/native-src
+  ```
+  **SCRIPT CHANGES (minimal, commented WHY; behaviour unchanged for non-image dev):** each
+  of the three make-*-android.sh now resolves `NATIVE_SRC_DIR="${NATIVE_SRC_DIR:-/opt/native-src}"`
+  and, BEFORE its network fetch, prefers the pre-staged source — falling back to the original
+  git-clone/curl ONLY when absent:
+   • make-ffmpeg-android.sh: if `$NATIVE_SRC_DIR/ffmpeg/.git` exists, `cp -a` it to the
+     ffmpeg-source cache instead of `git clone` (logs `using pre-staged FFmpeg source ... (offline)`).
+   • make-libsdl-android.sh: if `$NATIVE_SRC_DIR/SDL2-2.32.8.tar.gz` exists, `cp` it to the
+     build-dir tarball instead of `curl` (then the existing `tar xzf` path is unchanged).
+   • make-openssl-android.sh: same for `$NATIVE_SRC_DIR/openssl-1.1.1w.tar.gz`.
+  **AUTHORITATIVE COLD-NATIVE `--network none` PROOF (d-claude, scrcpy-e2e:dev, --device
+  /dev/kvm, 2x mem=1536):** procedure — (1) `docker volume rm/create scrcpy-gradle-cache`
+  then a NETWORKED warm-up of just the gradle volume (`assembleDebug` x2: `BUILD SUCCESSFUL`),
+  because the gradle DISTRIBUTION + Maven deps live in the persistent `scrcpy-gradle-cache`
+  volume BY DESIGN (not fetched per run when warm) — this is the harness's persistent-volume,
+  NOT the native-source path this task owns; (2) wiped `output/android` +
+  `porting/build/{ffmpeg,libsdl,openssl,scrcpy,adb-mobile}-android` + `porting/libs` + staged
+  jniLibs/scrcpy-server so the NATIVE cache is truly cold; (3) `getent hosts github.com`
+  inside `--network none` -> `NO-NET-good` (isolation confirmed); (4)
+  `docker run --rm --network none --device /dev/kvm ... -e FORCE_NATIVE_REBUILD=1 ...
+  run.sh --inner`. RESULT — exit 0. Native rebuilt cold OFFLINE from pre-staged source (log
+  VERBATIM): `[ffmpeg-android] using pre-staged FFmpeg source at /opt/native-src/ffmpeg
+  (offline)`, `[libsdl-android] using pre-staged tarball /opt/native-src/SDL2-2.32.8.tar.gz
+  (offline)`, `[openssl-android] using pre-staged tarball /opt/native-src/openssl-1.1.1w.tar.gz
+  (offline)`, `[70/70] Linking CXX shared library libscrcpy.so`, fresh `libscrcpy.so`
+  (14,108,352 B @ 14:54). Both APKs built (app-debug 25,476,621 B; target 816,473 B); stream
+  `INFO: Connected to 10.0.2.2:6555`, scrcpy-server `net.scrcpy.e2etarget` on B. 5/5
+  coordinate-faithful taps:
+  ```
+  Derived A->B transform (scaled x1000): SX=1000 OX=-1000 SY=1109 OY=-70784
+  p1 [calibration] (324,576)  -> expect (323,568)  got (323,568)  dx=0 dy=0 PASS
+  p2 [calibration] (756,1344) -> expect (755,1420) got (755,1420) dx=0 dy=0 PASS
+  p3 [validation]  (540,960)  -> expect (539,994)  got (540,994)  dx=1 dy=0 PASS
+  p4 [validation]  (756,576)  -> expect (755,568)  got (755,568)  dx=0 dy=0 PASS
+  p5 [validation]  (324,1344) -> expect (323,1420) got (323,1420) dx=0 dy=0 PASS
+  B final tap count = 5 (sent 5)   COLD_NATIVE_NETNONE_EXIT=0
+  ```
+  **NO-NETWORK GREP of the full run log (all 0):** `git clone`=0, `Cloning into`=0, `curl`=0,
+  `^Get:`(apt)=0, `Could not resolve host`=0, `UnknownHostException`=0, `services.gradle.org`=0,
+  `dl.google.com`=0, `Downloading http`=0. Combined with `--network none` (any stray fetch
+  would have UnknownHost-failed), this proves the cold native compile is hermetic.
+  **NOTE — a SEPARATE, orthogonal gap surfaced (NOT this task's scope):** a FIRST attempt that
+  ALSO wiped the gradle volume entirely failed at `Downloading
+  https://services.gradle.org/distributions/gradle-8.9-bin.zip -> UnknownHostException` — i.e.
+  the Gradle DISTRIBUTION (the wrapper zip) is fetched when the persistent volume is empty.
+  This is a distinct hermeticity item from the native SOURCE (the audit's CHECK 1 never
+  reached it — it failed earlier at the FFmpeg clone) and is absorbed by the persistent
+  `scrcpy-gradle-cache` volume by design. Recorded here as a known follow-up (bake the gradle
+  distribution into the image too if full volume-less coldness is ever required); it does not
+  affect the native-source hermeticity this task fixed and proved.
+  **SELF-CLEAN:** all `docker run --rm`; after the runs — 0 scrcpy-e2e containers, 0
+  qemu-system, 0 socat-6555, 0 persistent e2e AVDs; mf-e2e-* / redroid / ws-scrcpy untouched;
+  one e2e at a time (RAM rule honoured). **COMMITTED (source/scripts/state only — sources live
+  in the IMAGE, not git):** e2e/Dockerfile, porting/scripts/make-{ffmpeg,libsdl,openssl}-android.sh,
+  STATE.md. NOT committed: any .so/.a/.apk/jniLibs/assets/artifacts/native-sources. NEXT: M4
+  docs-honesty task (README hermeticity wording).
 - 2026-06-01: **FINAL M4 AUDIT — VERDICT: FAIL. The FUNCTIONAL locked goal is proven (our
   Android app on emulator A controls emulator B coordinate-faithfully), but the HERMETICITY
   requirement of the locked goal FAILS on a cold cache, so the goal is NOT yet fully

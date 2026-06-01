@@ -64,10 +64,23 @@ echo "   Jobs:         $JOBS"
 echo "=================================================================="
 
 # --- Fetch source (cached) --------------------------------------------------------
+# HERMETICITY: prefer a pre-staged source tree baked into the build image (the e2e
+# Docker image populates $NATIVE_SRC_DIR=/opt/native-src/ffmpeg at IMAGE-build time,
+# when the network is available). Copying from there lets a cold native rebuild run
+# fully offline (`--network none`). The git-clone is kept only as a fallback for dev
+# outside the image, so behaviour is unchanged when no pre-staged source exists.
+NATIVE_SRC_DIR="${NATIVE_SRC_DIR:-/opt/native-src}"
+PRESTAGED_FFMPEG="$NATIVE_SRC_DIR/ffmpeg"
 if [[ ! -d "$SRC_DIR/.git" ]]; then
-	echo "[ffmpeg-android] cloning FFmpeg $FFMPEG_REF ..."
-	rm -rf "$SRC_DIR"
-	git clone --depth 1 --branch "$FFMPEG_REF" https://github.com/FFmpeg/FFmpeg.git "$SRC_DIR"
+	if [[ -d "$PRESTAGED_FFMPEG/.git" ]]; then
+		echo "[ffmpeg-android] using pre-staged FFmpeg source at $PRESTAGED_FFMPEG (offline)"
+		rm -rf "$SRC_DIR"
+		cp -a "$PRESTAGED_FFMPEG" "$SRC_DIR"
+	else
+		echo "[ffmpeg-android] cloning FFmpeg $FFMPEG_REF ..."
+		rm -rf "$SRC_DIR"
+		git clone --depth 1 --branch "$FFMPEG_REF" https://github.com/FFmpeg/FFmpeg.git "$SRC_DIR"
+	fi
 else
 	echo "[ffmpeg-android] reusing cached source at $SRC_DIR"
 fi

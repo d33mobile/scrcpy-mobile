@@ -94,12 +94,25 @@ echo "   Jobs:         $JOBS"
 echo "=================================================================="
 
 # --- Fetch source (cached) --------------------------------------------------------
+# HERMETICITY: prefer a pre-staged tarball baked into the build image (the e2e
+# Docker image drops $NATIVE_SRC_DIR/SDL2-$SDL_VERSION.tar.gz at IMAGE-build time,
+# when the network is available). Extracting from there lets a cold native rebuild
+# run fully offline (`--network none`). The curl download is kept only as a fallback
+# for dev outside the image, so behaviour is unchanged when no pre-staged tarball
+# exists.
+NATIVE_SRC_DIR="${NATIVE_SRC_DIR:-/opt/native-src}"
+PRESTAGED_SDL_TARBALL="$NATIVE_SRC_DIR/SDL2-$SDL_VERSION.tar.gz"
 if [[ ! -f "$SRC_DIR/CMakeLists.txt" ]]; then
 	echo "[libsdl-android] downloading SDL2-$SDL_VERSION ..."
 	rm -rf "$SRC_DIR"
 	TARBALL="$BUILD_DIR/SDL2-$SDL_VERSION.tar.gz"
 	if [[ ! -f "$TARBALL" ]]; then
-		curl -fL -o "$TARBALL" "https://www.libsdl.org/release/SDL2-$SDL_VERSION.tar.gz"
+		if [[ -f "$PRESTAGED_SDL_TARBALL" ]]; then
+			echo "[libsdl-android] using pre-staged tarball $PRESTAGED_SDL_TARBALL (offline)"
+			cp "$PRESTAGED_SDL_TARBALL" "$TARBALL"
+		else
+			curl -fL -o "$TARBALL" "https://www.libsdl.org/release/SDL2-$SDL_VERSION.tar.gz"
+		fi
 	fi
 	tar xzf "$TARBALL" -C "$BUILD_DIR"
 else

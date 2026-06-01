@@ -104,4 +104,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         patch socat rsync meson \
     && rm -rf /var/lib/apt/lists/*
 
+# Pre-staged NATIVE SOURCE (hermeticity). The three native deps (FFmpeg, SDL2,
+# OpenSSL) used to fetch their SOURCE over the network at cold-build time
+# (make-ffmpeg-android.sh git-cloned FFmpeg, make-libsdl/openssl curled tarballs),
+# so a truly cold `bash e2e/run.sh` under `--network none` failed at the first
+# native step. We bake the EXACT pinned sources into the image here (image build
+# MAY use the network — only the e2e RUNTIME must be hermetic); the build scripts
+# honour $NATIVE_SRC_DIR and copy/extract from these instead of fetching, falling
+# back to the network only when absent (so dev outside the image still works).
+# Versions/URLs match the scripts 1:1 (FFmpeg release/6.0, SDL2 2.32.8,
+# OpenSSL 1.1.1w) — nothing changes but provenance. The same source serves BOTH
+# the x86_64 and arm64-v8a ABIs (per-ABI build trees are copied from it).
+# APPENDED AFTER the SDK/NDK + apt layers so a rebuild keeps those layers CACHED.
+ENV NATIVE_SRC_DIR=/opt/native-src
+RUN mkdir -p ${NATIVE_SRC_DIR} \
+    && git clone --depth 1 --branch release/6.0 \
+        https://github.com/FFmpeg/FFmpeg.git ${NATIVE_SRC_DIR}/ffmpeg \
+    && wget -q https://www.libsdl.org/release/SDL2-2.32.8.tar.gz \
+        -O ${NATIVE_SRC_DIR}/SDL2-2.32.8.tar.gz \
+    && ( wget -q https://www.openssl.org/source/old/1.1.1/openssl-1.1.1w.tar.gz \
+        -O ${NATIVE_SRC_DIR}/openssl-1.1.1w.tar.gz \
+       || wget -q https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1w/openssl-1.1.1w.tar.gz \
+        -O ${NATIVE_SRC_DIR}/openssl-1.1.1w.tar.gz ) \
+    && ls -la ${NATIVE_SRC_DIR}
+
 WORKDIR /workspace

@@ -80,16 +80,29 @@ echo "   Jobs:         $JOBS"
 echo "=================================================================="
 
 # --- Fetch source (cached) --------------------------------------------------------
+# HERMETICITY: prefer a pre-staged tarball baked into the build image (the e2e
+# Docker image drops $NATIVE_SRC_DIR/openssl-$OPENSSL_VERSION.tar.gz at IMAGE-build
+# time, when the network is available). Extracting from there lets a cold native
+# rebuild run fully offline (`--network none`). The curl download is kept only as a
+# fallback for dev outside the image, so behaviour is unchanged when no pre-staged
+# tarball exists.
+NATIVE_SRC_DIR="${NATIVE_SRC_DIR:-/opt/native-src}"
+PRESTAGED_OPENSSL_TARBALL="$NATIVE_SRC_DIR/openssl-$OPENSSL_VERSION.tar.gz"
 if [[ ! -f "$SRC_DIR/Configure" ]]; then
 	echo "[openssl-android] downloading openssl-$OPENSSL_VERSION ..."
 	rm -rf "$SRC_DIR"
 	TARBALL="$BUILD_DIR/openssl-$OPENSSL_VERSION.tar.gz"
 	if [[ ! -f "$TARBALL" ]]; then
-		# Primary: openssl.org "old" archive; fallback: GitHub release mirror.
-		curl -fL -o "$TARBALL" \
-			"https://www.openssl.org/source/old/1.1.1/openssl-$OPENSSL_VERSION.tar.gz" \
-		|| curl -fL -o "$TARBALL" \
-			"https://github.com/openssl/openssl/releases/download/OpenSSL_${OPENSSL_VERSION//./_}/openssl-$OPENSSL_VERSION.tar.gz"
+		if [[ -f "$PRESTAGED_OPENSSL_TARBALL" ]]; then
+			echo "[openssl-android] using pre-staged tarball $PRESTAGED_OPENSSL_TARBALL (offline)"
+			cp "$PRESTAGED_OPENSSL_TARBALL" "$TARBALL"
+		else
+			# Primary: openssl.org "old" archive; fallback: GitHub release mirror.
+			curl -fL -o "$TARBALL" \
+				"https://www.openssl.org/source/old/1.1.1/openssl-$OPENSSL_VERSION.tar.gz" \
+			|| curl -fL -o "$TARBALL" \
+				"https://github.com/openssl/openssl/releases/download/OpenSSL_${OPENSSL_VERSION//./_}/openssl-$OPENSSL_VERSION.tar.gz"
+		fi
 	fi
 	tar xzf "$TARBALL" -C "$BUILD_DIR"
 else
