@@ -18,7 +18,7 @@ host = `d-claude` (ssh). Build/run scratch on d-claude under `/srv/work`.
 
 ---
 
-## Current milestone: **M4 — Reproducibility, hardening & final review**
+## Current milestone: **DONE — LOCKED GOAL FULLY REALIZED**
 
 (M0 — Scaffolding & red-but-running pipeline — **PASSED audit 2026-06-01**.
 M1 — Native stack cross-compiled for Android x86_64 — **PASSED audit 2026-06-01**;
@@ -112,15 +112,97 @@ run is green; then the goal is declared fully realized.
       Once the native-source + Gradle baking are both done, make the README claim full
       offline hermeticity TRUTHFULLY (it is the accurate end state), and document the
       `--network none` default + the image-build-time (networked, one-time) provisioning.
-- [ ] FINAL goal audit (LAST — run only after the two unchecked tasks above are done):
+- [x] FINAL goal audit (LAST — run only after the two unchecked tasks above are done):
       from absolute scratch (native caches + gradle volume cleared, image only), run
       `bash e2e/run.sh` under `--network none` and confirm green — SUCCESS banner,
       `Connected to 10.0.2.2:6555`, scrcpy-server on B, 5/5 coordinate-faithful taps,
       zero network fetches — plus honest docs + iOS-intact + pushed. Then declare the
       locked goal FULLY REALIZED in STATE.md (Current milestone → DONE). When this
       passes, the loop STOPS.
+      **DONE 2026-06-01 — PASSED. The LOCKED GOAL IS FULLY REALIZED. See progress log.**
 
 ### Progress log
+- 2026-06-01: **FINAL GOAL AUDIT — VERDICT: PASS. THE LOCKED GOAL IS FULLY REALIZED.**
+  "A reliably-green ONE-SCRIPT Dockerized two-emulator e2e proving our Android app on emulator
+  A controls emulator B" — HERMETIC (runs offline) and the DOCS HONEST — is independently proven
+  by commands (trusting no prose). Audit ran on d-claude (host confirmed `hostname=d-claude`),
+  scrcpy-e2e:dev, `--device /dev/kvm`, 2×mem=1536; one e2e at a time; self-cleaned.
+  **IMAGE CURRENT:** rsynced repo → `/srv/work/scrcpy-mobile-e2e`, `docker build -t scrcpy-e2e:dev
+  -f e2e/Dockerfile .` (context = repo ROOT) → all 12 layers CACHED, `real 0m2.6s`, image
+  `sha256:561156db…`. Baked contents verified in-image: `NATIVE_SRC_DIR=/opt/native-src` holds
+  `ffmpeg` (git `heads/release/6.0`) + `SDL2-2.32.8.tar.gz` + `openssl-1.1.1w.tar.gz`;
+  `GRADLE_USER_HOME=/opt/gradle-home` (581M) holds the `gradle-8.9-bin` dist + AGP/Kotlin/AndroidX
+  Maven deps.
+  **AUTHORITATIVE FROM-ABSOLUTE-SCRATCH `--network none` RUN — exit 0.** Procedure: `docker volume
+  rm scrcpy-gradle-cache` (NOT recreated — IMAGE ONLY; verified GONE), wiped `output/android` +
+  `porting/build/{ffmpeg,libsdl,openssl,scrcpy,adb-mobile}-android` (porting/build EMPTY) +
+  `porting/libs` + staged jniLibs/scrcpy-server asset + both APK `app/build`/`.gradle`/`build`
+  (all verified GONE); then `FORCE_NATIVE_REBUILD=1 bash e2e/run.sh`. Outer logged `inner container
+  runs with --network none (hermetic)` → `Launching INNER container (docker run --device /dev/kvm
+  --network none)`. Native cross-compiled cold OFFLINE from baked source: `[ffmpeg-android] using
+  pre-staged FFmpeg source at /opt/native-src/ffmpeg (offline)`, `[libsdl-android] using pre-staged
+  tarball /opt/native-src/SDL2-2.32.8.tar.gz (offline)`, `[openssl-android] using pre-staged tarball
+  /opt/native-src/openssl-1.1.1w.tar.gz (offline)`, `[70/70] Linking CXX shared library
+  libscrcpy.so` (fresh `libscrcpy.so` 14,108,920 B). Both APKs OFFLINE from baked home: `using
+  offline GRADLE_USER_HOME=/opt/gradle-home (--offline; baked gradle dist + deps)`, `BUILD
+  SUCCESSFUL in 21s` + `BUILD SUCCESSFUL in 12s`. Stream `INFO: Connected to 10.0.2.2:6555`,
+  scrcpy-server `net.scrcpy.e2etarget` (app_process) running on B. 5/5 coordinate-faithful taps:
+  ```
+  Derived A->B transform (scaled x1000): SX=1000 OX=-1000 SY=1109 OY=-70784
+  p1 [calibration] (324,576)  -> expect (323,568)  got (323,568)  dx=0 dy=0 PASS
+  p2 [calibration] (756,1344) -> expect (755,1420) got (755,1420) dx=0 dy=0 PASS
+  p3 [validation]  (540,960)  -> expect (539,994)  got (540,994)  dx=1 dy=0 PASS
+  p4 [validation]  (756,576)  -> expect (755,568)  got (755,568)  dx=0 dy=0 PASS
+  p5 [validation]  (324,1344) -> expect (323,1420) got (323,1420) dx=0 dy=0 PASS
+  B final tap count = 5 (sent 5)
+  17:43:40 [run.sh] ==================== SUCCESS (e2e green) ====================   AUTHORITATIVE_EXIT=0
+  ```
+  **ZERO-NETWORK GREP of the full 1,175,281-byte run log — ALL 0:** `git clone`=0, `Cloning
+  into`=0, `curl http`=0, `^Get:`(apt)=0, `Could not resolve host`=0, `UnknownHostException`=0,
+  `Downloading http`=0, `dl.google.com`=0, `services.gradle.org`=0, `repo.maven`=0, `Network is
+  unreachable`=0, `Temporary failure in name resolution`=0, `Failed to connect`=0. The only 2
+  `downloading` hits are the libsdl/openssl scripts' INTENT log lines, each IMMEDIATELY followed by
+  `using pre-staged tarball … (offline)` (verified by context) — no actual fetch. Under `--network
+  none` any stray fetch would have UnknownHost-failed; combined with the grep this proves the WHOLE
+  harness (native cross-compile + both Gradle APK builds + boot + connect + tap-assert) is hermetic
+  from absolute scratch with NO external state but the image.
+  **CORROBORATION RUN (warm, `--network none` default) — exit 0.** `inner container runs with
+  --network none (hermetic)`; `libscrcpy.so present … — skipping native build`; `INFO: Connected to
+  10.0.2.2:6555`; identical transform + 5/5 PASS table; `B final tap count = 5 (sent 5)`; SUCCESS
+  banner; `CORROBORATION_EXIT=0`; zero-network spot-check (`Could not resolve host`/`UnknownHostException`/
+  `^Get:`/`dl.google.com`) all 0. → reliably green.
+  **ASSERTION INTEGRITY (re-read run.sh inner_full + lib-automation.sh) — sound, not gameable:**
+  taps injected on A (`auto_tap_on_a "$SERIAL_A"` = `adb -s emulator-5556 shell input tap`), state
+  read from B (`auto_read_b "$SERIAL_B"` → `target_read_state emulator-5554`). `exit 0` ONLY after
+  ALL gates: `INFO: Connected to` present (else fail) AND scrcpy-server proc on B (else fail) AND
+  every tap incremented B's counter (else `fail "control path broken"`) AND `FINAL_N == sent`
+  (else fail "taps lost/duplicated") AND every tap (incl. 3 INDEPENDENT validation points) within
+  max(25px,3%) of the calibration-DERIVED affine transform (else fail). Broken connection / lost
+  tap / wrong mapping each trips a distinct non-zero exit.
+  **DOCS HONEST:** README.md "Building & running" describes the accurate two-phase model — (a) the
+  one-time NETWORKED `docker build` that bakes apt tools + SDK/NDK/CMake/emulator + pinned native
+  sources + the offline Gradle home; (b) the fully OFFLINE run (`--network none` by default, native
+  cross-compile from baked source, APKs `--offline` from baked home, `E2E_ALLOW_NET=1` escape hatch).
+  "Requirements at run time: Docker + `/dev/kvm` only — no network needed." Status/what-works/
+  limitations (x86_64-emulator-only, SW H.264 decode, minimal UI, arm64 built-but-on-device-untested,
+  status=6 hijack logging gap) match reality. No overclaim, no undersell.
+  **iOS / SUBMODULES / GIT (all clean):** the branch diff (merge-base main..HEAD) touches only
+  porting scripts/sources/Makefiles, android-app, e2e, README, ai/plans, vendored SDL Java — NO iOS
+  source (`.m`/`.mm`/Metal/VideoToolbox = 0 hits); shared `porting/src/{controller,demuxer,scrcpy}-porting.c`
+  edits are `__APPLE__`/`__ANDROID__`-guarded (iOS path preserved); `android-jni-bridge.c` is fully
+  `#if defined(__ANDROID__)` and NOT in `porting/cmake/` (iOS build); NO `Subproject commit` changes
+  in range — scrcpy@fb6381f (v3.3.4) + adb-mobile@78c32c2 unbumped. No `.so/.a/.apk/.o/.dex` tracked.
+  Tree clean; HEAD == `fork/android-controls-android` (this STATE.md commit pushed below).
+  **SELF-CLEAN:** all `docker run --rm`; after both runs — 0 scrcpy-e2e containers, 0 qemu-system,
+  0 socat-6555; mf-e2e-* / redroid / ws-scrcpy untouched; audit logs removed from /srv/work. (Note:
+  the `scrcpy-gradle-cache` named volume re-appears because run.sh mounts it at `/root/.gradle`, but
+  `GRADLE_USER_HOME=/opt/gradle-home` overrides it — it is an unused optional cache; the authoritative
+  run proved offline-from-scratch with it freshly empty.)
+  **END STATE:** M0–M4 ALL audited done. One-script hermetic two-emulator e2e is GREEN & RELIABLE
+  (authoritative from-absolute-scratch `--network none` + warm corroboration both exit 0, A controls
+  B coordinate-faithfully, fully offline). arm64-v8a native stack built + ELF-verified but
+  on-device-UNTESTED (no arm64 hardware). WIP items documented honestly in README (x86_64-only,
+  SW decode, minimal UI). **The LOCKED GOAL is FULLY REALIZED. The loop STOPS.**
 - 2026-06-01: **M4 DOCS-HONESTY task — DONE (docs only; no code/build change).** Reconciled
   README.md (+ e2e/README.md) with the now-ACCURATE hermeticity model that the
   native-source + Gradle baking + `--network none`-by-default work made real. Verified the
