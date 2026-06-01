@@ -80,8 +80,17 @@ case "$TARGET_ABI" in
 esac
 
 # --- x86 asm: prefer nasm, otherwise disable (documented fallback) -----------------
+# NB: FFmpeg's x86_64 hand-written asm emits R_X86_64_PC32 text relocations
+# against its internal constant tables; those make any .so that statically links
+# libavcodec/libavutil carry DT_TEXTREL, which Android's bionic linker (API>=23)
+# REFUSES to load ("has text relocations"). Since libscrcpy is a SHARED object,
+# set FFMPEG_DISABLE_X86ASM=1 to drop x86asm (pure C software decode) and get a
+# TEXTREL-free FFmpeg. Decode is a touch slower but loads on-device.
 X86ASM_FLAG=""
-if [[ "$FF_ARCH" == "x86_64" ]]; then
+if [[ "${FFMPEG_DISABLE_X86ASM:-0}" == "1" ]]; then
+	echo "[ffmpeg-android] FFMPEG_DISABLE_X86ASM=1 -> --disable-x86asm (TEXTREL-free for shared libscrcpy.so)."
+	X86ASM_FLAG="--disable-x86asm"
+elif [[ "$FF_ARCH" == "x86_64" ]]; then
 	if command -v nasm >/dev/null 2>&1; then
 		X86ASM_FLAG="--x86asmexe=$(command -v nasm)"
 		echo "[ffmpeg-android] using nasm for x86 asm: $(command -v nasm)"
@@ -181,8 +190,16 @@ make install
 # iOS build copies lib*.a flat into OUTPUT and an include/ dir alongside. Mirror it.
 echo "[ffmpeg-android] staging libs + headers into $OUTPUT ..."
 find "$PREFIX/lib" -maxdepth 1 -name '*.a' -exec cp -v {} "$OUTPUT/" \;
-rm -rf "$OUTPUT/include"
-cp -a "$PREFIX/include" "$OUTPUT/include"
+# MERGE FFmpeg's headers into the shared include/ dir (do NOT `rm -rf include`:
+# the other android deps — SDL2/openssl/adb — install their headers there too,
+# and the build order must not matter). Only replace the libav*/libsw* subdirs
+# that FFmpeg owns.
+mkdir -p "$OUTPUT/include"
+for d in "$PREFIX"/include/*/; do
+	name="$(basename "$d")"
+	rm -rf "$OUTPUT/include/$name"
+done
+cp -a "$PREFIX"/include/. "$OUTPUT/include/"
 
 echo "=================================================================="
 echo "[ffmpeg-android] DONE. Libraries in: $OUTPUT"

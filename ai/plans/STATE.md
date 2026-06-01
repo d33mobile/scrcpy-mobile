@@ -41,14 +41,151 @@ Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
       NDK approach). Document choice.
 - [x] Build **adb-mobile** (`external/adb-mobile`) for android x86_64, or substitute
       an equivalent in-process ADB path. Document choice.
-- [ ] Adapt `porting/src` behind the NDK path: drop the `OpenGLES/ES3` include (use
+- [x] Adapt `porting/src` behind the NDK path: drop the `OpenGLES/ES3` include (use
       SDL2 GLES), bypass VideoToolbox/Metal hijacks → software FFmpeg decode + SDL
       texture upload, Android clipboard stub. Keep iOS code paths via `#ifdef`.
-- [ ] Build **`libscrcpy.so`** for x86_64; link a tiny NDK smoke executable that
+- [x] Build **`libscrcpy.so`** for x86_64; link a tiny NDK smoke executable that
       calls `scrcpy_main` and prints usage without crashing — run it inside
       `scrcpy-e2e:dev` on d-claude and capture output. Commit + push when green.
 
 ### Progress log
+- 2026-06-01: **M1 tasks 6 + 7 done — `libscrcpy.so` cross-compiled for android
+  x86_64 and the NDK smoke exe runs `scrcpy_main --help` cleanly on-device. M1
+  COMPLETE.**
+  **porting/src #ifdef adaptations (all additive, iOS path kept under `__APPLE__`):**
+   • `porting/include/porting.h`: the iOS `<OpenGLES/ES3/gl.h>`+`<OpenGLES/gltypes.h>`
+     include is now under `#if defined(__APPLE__)`; the `#else` (Android) uses the
+     NDK `<GLES3/gl3.h>`+`<GLES2/gl2ext.h>`. Dropped the iOS `typedef GLfloat
+     GLdouble`/`GLclampd` on Android (the NDK gl2ext.h already typedefs them →
+     would conflict) and the iOS `<SDL2/SDL_opengl_glext.h>` include (clashes with
+     NDK gl2ext; not needed — opengl.c pulls GL via SDL).
+   • `porting/src/demuxer-porting.c`: the VideoToolbox HW-decode hijack
+     (`av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VIDEOTOOLBOX)`) is now under
+     `#if defined(__APPLE__)`; the `#else` (Android) just returns the plain
+     AVCodecContext → scrcpy's normal FFmpeg **software** decode +
+     `SDL_UpdateYUVTexture` rendering runs (no Metal/VT).
+   • `porting/src/controller-porting.c`: `#import "screen.h"` (ObjC-only syntax)
+     → `#include "screen.h"` (compiles under the NDK C frontend; identical on iOS).
+   • decoder-porting.c / display-porting.c / screen-porting.c needed NO source
+     change — their hijacks already gate on `ScrcpyEnableHardwareDecoding()` (0 on
+     Android via the stub below ⇒ the SW path), and SDL handles clipboard
+     cross-platform (the `SDL_CLIPBOARDUPDATE` handler in screen-porting.c is
+     SDL-generic). process-porting.cpp already uses `adb_public.h` → libadb-full.a.
+   • **NEW `porting/src/android-stubs.c`** (Android-only, also `#if !__APPLE__`
+     guarded): weak defaults for the symbols the iOS app/SDL-fork provides —
+     `ScrcpyEnableHardwareDecoding`(→0, forces SW path), `ScrcpyTryResetVideo`,
+     `ScrcpyHandleFrame`, `GetUpdateApplicationBackgroundState`,
+     `SDL_UpdateCommandGeneration` (iOS-SDL-fork ext, no-op), `ScrcpyAudioVolumeScale`
+     (→1.0), and the AOSP adb globals `__adb_argv`/`__adb_envp` (defined in AOSP
+     client/main.cpp, which the port excludes). The M2 app will provide strong
+     overrides.
+   • **NEW `porting/src/android-adb-stubs.cpp`**: weak no-op stubs for adb
+     **dead-path** entry points that libadb-full.a references but does not define
+     (its bundle lacks the adb mDNS/bonjour/emulator-command/logd-pmsg and
+     adb-wifi-pairing TUs): `using_bonjour`, `mdns_check`,
+     `mdns_{list_discovered_services,get_connect_service_info,get_pairing_service_info}`,
+     `adb_secure_connect_by_service_name`, `adb_send_emulator_command`,
+     `Logd{Write,Close}`, `Pmsg{Write,Close}`, `adbwifi::pairing::PairingClient::Create`.
+     scrcpy's adb host uses only `adb_commandline_porting`, which never reaches
+     these — but bionic resolves non-lazy relocs eagerly at dlopen, so the .so
+     must define them to LOAD. Signatures mirror adb's headers so the C++ mangled
+     names line up exactly (verified: 0 adb dead-path UND symbols remain).
+  **Android CMake build (mirrors porting/cmake/CMakeLists.txt, additive):**
+   • **NEW `porting/scripts/scrcpy-android-CMakeLists.txt`** + driver
+     **`porting/scripts/make-scrcpy-android.sh`** (wired into `Makefile.android`
+     `android-scrcpy`, TODO stub replaced; iOS Makefile untouched). Same source
+     list as the iOS cmake (the porting/src replacements + scrcpy/app/src/* core),
+     minus the USB sources (mobile) and — unlike iOS — it does NOT compile
+     `sys/unix/process.c`/`util/process_intr.c` standalone (process-porting.c
+     already amalgamates them via `#include`; the iOS Mach-O link tolerates the
+     resulting dup symbols, lld does not). Builds a **SHARED `libscrcpy.so`** via
+     the NDK `android.toolchain.cmake` (`ANDROID_ABI=x86_64`,
+     `ANDROID_PLATFORM=android-26`, `ANDROID_STL=c++_shared`, `-include porting.h`
+     mirroring iOS `-include porting.h`). C++17 (adb mDNS sigs use
+     `std::optional`/`string_view`).
+   • **config.h handling:** the iOS build gets `scrcpy/x/app/config.h` from
+     `meson setup x`. The Android cmake instead WRITES a static config.h into the
+     build dir replicating exactly meson's emitted defines (per
+     scrcpy/app/meson.build): `HAVE_SOCK_CLOEXEC=1` (bionic has it),
+     `SCRCPY_VERSION="3.3.4"`, `PREFIX`, `DEFAULT_LOCAL_PORT_RANGE_FIRST/LAST
+     27183/27199`. CRITICAL: scrcpy gates features with `#ifdef` and meson emits
+     disabled bools as `#undef`, so `PORTABLE`/`SERVER_DEBUGGER`/`HAVE_V4L2`/
+     `HAVE_USB` are intentionally LEFT UNDEFINED (defining them `=0` would still
+     be truthy under `#ifdef` and pull in `<libusb-1.0/libusb.h>` etc).
+   • **Link:** `--start-group` over the prebuilt static deps
+     (libav*/libsw*/libssl/libcrypto/libadb-full) `--end-group` + `libSDL2.so` +
+     android sys libs (`-llog -landroid -lGLESv3 -lGLESv2 -lEGL -lOpenSLES -lm`).
+     Link flags that were load-bearing: **`-Bsymbolic`** (FFmpeg's internal data
+     tables e.g. `ff_h264_cabac_tables` are referenced cross-object via PC32;
+     binding them locally makes the PC32 link-time-resolvable with no runtime
+     reloc — without it lld errors "recompile with -fPIC"),
+     **`--allow-multiple-definition`** (libadb-full.a statically bundles BoringSSL
+     whose X509_*/EVP_* symbols collide with scrcpy's OpenSSL libcrypto.a),
+     **`--unresolved-symbols=ignore-all`** (the NDK toolchain forces
+     `-Wl,--no-undefined`; libc++ runtime + a few protobuf-pulled abseil symbols
+     on adb dead paths are satisfied at runtime by `libc++_shared.so` / never
+     called), **`-z lazy`**.
+  **Two dep fixes required to make the .so actually LOAD on Android (bionic):**
+   1. **`make-ffmpeg-android.sh`**: added `FFMPEG_DISABLE_X86ASM=1` knob and
+      rebuilt FFmpeg with **`--disable-x86asm`**. FFmpeg's x86_64 hand-written asm
+      emits R_X86_64_PC32 **text relocations** → the .so gets `DT_TEXTREL`, which
+      bionic (API≥23) REFUSES to load ("has text relocations"). x86asm-off = pure-C
+      PIC FFmpeg ⇒ libscrcpy.so is TEXTREL-free (verified `llvm-readelf -d` shows
+      no TEXTREL). (libavcodec.a 5.0M→3.8M.) Also fixed the script to **MERGE**
+      headers into the shared `include/` instead of `rm -rf include` (it was
+      wiping SDL2/openssl/adb headers that the other deps install there — made the
+      build order-dependent).
+   2. **`make-adb-mobile-android.sh`**: the bundle was missing **brotli** (built
+      `.so` not `.a` → `BrotliDecoder*` undefined) and **abseil/utf8_range** (only
+      libprotobuf.a was folded in, not its abseil deps → ~80 `absl::` undefined).
+      Fixed: try brotli `*-static` targets then fall back to archiving brotli's
+      compiled `.o`s; collect+bundle the `libabsl_*.a`/`libutf8_*.a` from the
+      protobuf-android abseil build. libadb-full.a 22M→26M, brotli/absl now `T`.
+  **BUILT GREEN on d-claude in `scrcpy-e2e:dev`** via `make android-scrcpy`
+  (`make-scrcpy-android.sh`): 69/69 ninja, `[scrcpy-android] DONE`. apt deps
+  per-run: `make` (+ `nasm pkg-config` for the ffmpeg rebuild, `golang-go
+  build-essential patch` for the adb rebuild). cmake 3.22.1 + ninja auto-resolved
+  from `$ANDROID_SDK_ROOT/cmake/*/bin`. **libscrcpy.so = 15.25 MB**; **VERIFIED**
+  (llvm-readelf/llvm-nm): `ELF64 / DYN / X86-64`, SONAME `libscrcpy.so`, **NO
+  TEXTREL**, `.note.android.ident`, exports `T scrcpy_main` + `T
+  scrcpy_print_version`; **NEEDED** = `libSDL2.so liblog.so libandroid.so
+  libGLESv3.so libGLESv2.so libEGL.so libOpenSLES.so libm.so libc++_shared.so
+  libdl.so libc.so`. The driver also stages the NDK `libc++_shared.so` next to it
+  (ANDROID_STL=c++_shared ⇒ NEEDED at runtime; M2 APK must bundle it).
+  **SMOKE TEST** (`porting/scripts/scrcpy-smoke.c`: `extern int scrcpy_main(int,
+  char**)`, calls it with `{"scrcpy","--help"}`): cross-compiled for android
+  x86_64, linked vs libscrcpy.so+libSDL2.so (RUNPATH `$ORIGIN`), pushed into a
+  throwaway **redroid Android-11 x86_64** container on d-claude (the scrcpy-e2e
+  emulator wasn't needed — redroid shares the host kernel, boots an Android
+  userspace + bionic linker in seconds) and RUN. **VERBATIM output (head):**
+  ```
+  [smoke] calling scrcpy_main --help
+  scrcpy 3.3.4 <https://github.com/Genymobile/scrcpy>
+  Usage: scrcpy [options]
+
+  Options:
+
+      --always-on-top
+          Make scrcpy window always on top (above other windows).
+  ... [full scrcpy usage incl. shortcuts, env vars] ...
+  Exit status:
+        0  Normal program termination
+        1  Start failure
+        2  Device disconnected while running
+  EXIT=0
+  ```
+  ACCEPT met: the bionic dynamic linker loaded libscrcpy.so + its deps with NO
+  "has text relocations" / "cannot locate symbol" / dlopen error, control entered
+  `scrcpy_main`, the full scrcpy 3.3.4 usage/version text printed, and the process
+  exited 0 (scrcpy's `--help` path calls `exit(0)` itself, so the post-call
+  `[smoke] returned` line is not reached — a clean exit, not a crash). Throwaway
+  redroid removed after capture (host left clean).
+  **Committed:** the porting.h/demuxer/controller `#ifdef` edits, the two new
+  android-stubs source files, the new android cmake + driver + smoke source, the
+  Makefile.android wire-up, the ffmpeg/adb dep-script fixes, STATE. **NOT
+  committed** (gitignore swallows): `output/` (`.so`/`.a`), `porting/build/`, the
+  scrcpy submodule (pointer NOT bumped — stays @fb6381f). **M1 accept criteria
+  fully satisfied → run M1 audit next.**
 - 2026-06-01: **M1 task 5 done — adb-mobile (`libadb-full.a`) cross-compiled for
   android x86_64.** This is the in-process ADB host (`adb_commandline_porting` API)
   that pushes the scrcpy server + opens TCP tunnels, same role as the iOS build.

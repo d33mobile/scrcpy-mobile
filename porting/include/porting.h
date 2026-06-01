@@ -8,6 +8,7 @@
 #ifndef porting_h
 #define porting_h
 
+#if defined(__APPLE__)
 #include <OpenGLES/gltypes.h>
 #include <OpenGLES/ES3/gl.h>
 
@@ -15,6 +16,13 @@ typedef GLfloat GLdouble;
 typedef double GLclampd;
 
 #include <SDL2/SDL_opengl_glext.h>
+#else
+// Android (NDK): use the NDK GLES headers (opengl.c compiles against NDK GLES).
+// NB: the NDK's <GLES2/gl2ext.h> already typedefs GLdouble/GLclampd, so unlike
+// the iOS path we must NOT redefine them here (would be a typedef conflict).
+#include <GLES3/gl3.h>
+#include <GLES2/gl2ext.h>
+#endif
 
 // Define NDEBUG will define assert -> (void)0, see assert.h
 // This will prevent to_fixed_point_16 crashed

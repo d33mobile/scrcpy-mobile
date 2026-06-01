@@ -17,8 +17,8 @@
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
-// Defined in screen-porting.m
-#import "screen.h"
+// Defined in screen-porting.c
+#include "screen.h"
 struct sc_screen *
 sc_screen_current_screen(struct sc_screen *screen);
 

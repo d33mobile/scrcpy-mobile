@@ -226,7 +226,11 @@ if ! ls "$ZSTD_BUILD"/*.a >/dev/null 2>&1; then
 fi
 COMPRESS_LIBS+=("$(find "$ZSTD_BUILD" -maxdepth 1 -name 'libzstd.a' | head -1)")
 
-# brotli (top-level CMakeLists)
+# brotli (top-level CMakeLists). adb's transport links BrotliDecoder*/BrotliEncoder*.
+# brotli's CMake emits both shared and static targets; depending on cache state the
+# *.a may not materialise. To be robust we (1) try the static targets, then
+# (2) fall back to archiving the compiled brotli .o objects directly (they are
+# built -fPIC by the NDK toolchain), so the symbols always make it into the bundle.
 BROTLI_BUILD="$BUILD_ROOT/brotli-android"
 if ! ls "$BROTLI_BUILD"/*.a >/dev/null 2>&1; then
   echo "==[adb-mobile-android] cross-compiling brotli (Android $TARGET_ABI) ..."
@@ -235,11 +239,33 @@ if ! ls "$BROTLI_BUILD"/*.a >/dev/null 2>&1; then
     -DANDROID_ABI="$TARGET_ABI" -DANDROID_PLATFORM="android-$ANDROID_API" \
     -DCMAKE_BUILD_TYPE=Release -DBROTLI_BUNDLED_MODE=ON -DBUILD_SHARED_LIBS=OFF
   cmake --build "$BROTLI_BUILD/cmake" \
+    --target brotlidec-static --target brotlienc-static --target brotlicommon-static \
+    --parallel "$(nproc)" 2>/dev/null || \
+  cmake --build "$BROTLI_BUILD/cmake" \
     --target brotlidec --target brotlienc --target brotlicommon --parallel "$(nproc)"
   find "$BROTLI_BUILD/cmake" -name 'libbrotli*.a' -exec cp -v {} "$BROTLI_BUILD/" \;
 fi
+# Fallback: if no brotli .a, archive its .o objects into one static lib.
+if ! ls "$BROTLI_BUILD"/*.a >/dev/null 2>&1; then
+  echo "==[adb-mobile-android] no brotli .a — archiving brotli objects directly ..."
+  mapfile -t _BROBJ < <(find "$BROTLI_BUILD/cmake/CMakeFiles" -name '*.c.o' \
+    \( -path '*brotlidec*' -o -path '*brotlienc*' -o -path '*brotlicommon*' \))
+  if [[ ${#_BROBJ[@]} -gt 0 ]]; then
+    "$ANDROID_AR" rcs "$BROTLI_BUILD/libbrotli-bundled.a" "${_BROBJ[@]}"
+  fi
+fi
 while IFS= read -r a; do COMPRESS_LIBS+=("$a"); done < <(find "$BROTLI_BUILD" -maxdepth 1 -name 'libbrotli*.a')
 echo "==[adb-mobile-android] compression libs: ${COMPRESS_LIBS[*]}"
+
+# --- abseil + utf8_range: protobuf (and thus adb's *.pb.cc) depend on these.
+# The android libprotobuf.a does NOT inline them, so collect the per-module
+# libabsl_*.a / libutf8_*.a that protobuf's bundled abseil produced and fold them
+# into the same archive — otherwise libadb-full.a leaves ~80 absl:: symbols
+# undefined and any consumer .so fails to load.
+ABSL_LIBS=()
+while IFS= read -r a; do ABSL_LIBS+=("$a"); done < <(
+  find "$BUILD_ROOT/protobuf-android" \( -name 'libabsl_*.a' -o -name 'libutf8_*.a' \) -type f)
+echo "==[adb-mobile-android] abseil/utf8 libs: ${#ABSL_LIBS[@]} archives"
 
 # ================================================================================
 # 4. Configure + build the standalone adb static-lib project through the NDK.
@@ -272,6 +298,7 @@ ALL_A=()
 while IFS= read -r a; do ALL_A+=("$a"); done < <(find "$ADB_BUILD" -name '*.a' -type f)
 ALL_A+=("$PB_LIB")
 for a in "${COMPRESS_LIBS[@]}"; do [[ -n "$a" && -f "$a" ]] && ALL_A+=("$a"); done
+for a in "${ABSL_LIBS[@]}"; do [[ -n "$a" && -f "$a" ]] && ALL_A+=("$a"); done
 
 # Merge with llvm-ar MRI script (thin-merge all members into one archive).
 MRI="$BUNDLE_DIR/merge.mri"

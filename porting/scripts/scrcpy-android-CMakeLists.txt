@@ -1,0 +1,236 @@
+# Android (NDK) CMake build of libscrcpy.so — the Android counterpart of
+# porting/cmake/CMakeLists.txt (the iOS build). It mirrors the same source list
+# (the porting/src replacements + scrcpy/app/src/* core files) but:
+#   * builds a SHARED libscrcpy.so for android x86_64 via the NDK toolchain,
+#   * links the prebuilt android deps from output/android/<abi>/
+#     (ffmpeg/openssl/adb static .a + libSDL2.so) + android system libs,
+#   * generates scrcpy's config.h itself (the iOS build gets it from `meson
+#     setup x`; here we write a static config.h — see below),
+#   * pulls in porting/src/android-stubs.c for the app/SDL-fork symbols.
+#
+# The iOS build (porting/cmake/CMakeLists.txt) is untouched and independent.
+#
+# Required cache vars (passed by make-scrcpy-android.sh):
+#   SCRCPY_MOBILE_ROOT   repo root (parent of porting/ and scrcpy/)
+#   ANDROID_DEPS_DIR     output/android/<abi> (prebuilt libs + include/)
+
+cmake_minimum_required(VERSION 3.18.1)
+
+project("scrcpy" C CXX)
+
+if(NOT DEFINED SCRCPY_MOBILE_ROOT)
+    message(FATAL_ERROR "SCRCPY_MOBILE_ROOT must be set")
+endif()
+if(NOT DEFINED ANDROID_DEPS_DIR)
+    message(FATAL_ERROR "ANDROID_DEPS_DIR must be set")
+endif()
+
+set(ROOT     "${SCRCPY_MOBILE_ROOT}")
+set(PORTING  "${ROOT}/porting")
+set(SCRCPY   "${ROOT}/scrcpy/app/src")
+set(DEPS     "${ANDROID_DEPS_DIR}")
+set(DEPINC   "${ANDROID_DEPS_DIR}/include")
+
+# --- Generate scrcpy's config.h --------------------------------------------------
+# The iOS build relies on `meson setup x` to produce scrcpy/x/app/config.h and
+# adds scrcpy/x/app to the include path. We replicate the exact set of defines
+# meson emits (see scrcpy/app/meson.build), specialised for Android:
+#   * HAVE_SOCK_CLOEXEC  -> 1 (bionic has SOCK_CLOEXEC)
+#   * SCRCPY_VERSION     -> matches the server (3.3.4)
+#   * PORTABLE/V4L2/USB/SERVER_DEBUGGER -> off (mobile, in-process adb, no usb)
+set(GEN_DIR "${CMAKE_BINARY_DIR}/gen")
+file(MAKE_DIRECTORY "${GEN_DIR}")
+# IMPORTANT: meson emits `conf.set(NAME, false)` as `#undef NAME`, and scrcpy
+# gates optional features with `#ifdef` (NOT `#if`). So a disabled feature must
+# be ABSENT, not `#define ... 0`. PORTABLE/SERVER_DEBUGGER/HAVE_V4L2/HAVE_USB
+# are therefore intentionally left undefined here.
+file(WRITE "${GEN_DIR}/config.h"
+"#ifndef CONFIG_H\n"
+"#define CONFIG_H\n"
+"#define HAVE_SOCK_CLOEXEC 1\n"
+"#define SCRCPY_VERSION \"3.3.4\"\n"
+"#define PREFIX \"/usr/local\"\n"
+"#define DEFAULT_LOCAL_PORT_RANGE_FIRST 27183\n"
+"#define DEFAULT_LOCAL_PORT_RANGE_LAST 27199\n"
+"/* PORTABLE, SERVER_DEBUGGER, HAVE_V4L2, HAVE_USB: disabled => undefined */\n"
+"#endif\n"
+)
+
+# --- Source list (mirrors porting/cmake/CMakeLists.txt) --------------------------
+# Lines that the iOS CMake comments out in favour of a porting/src replacement are
+# replaced here identically. USB sources stay excluded (mobile).
+add_library(scrcpy SHARED
+        ${SCRCPY}/control_msg.c
+        ${PORTING}/src/display-porting.c          # replaces display.c
+        ${SCRCPY}/uhid/gamepad_uhid.c
+        ${SCRCPY}/uhid/mouse_uhid.c
+        ${SCRCPY}/uhid/keyboard_uhid.c
+        ${SCRCPY}/uhid/uhid_output.c
+        ${PORTING}/src/controller-porting.c       # replaces controller.c
+        ${SCRCPY}/recorder.c
+        ${PORTING}/src/demuxer-porting.c          # replaces demuxer.c
+        ${SCRCPY}/cli.c
+        ${SCRCPY}/receiver.c
+        ${SCRCPY}/compat.c
+        ${SCRCPY}/util/log.c
+        ${SCRCPY}/util/net_intr.c
+        ${SCRCPY}/util/thread.c
+        ${SCRCPY}/util/term.c
+        ${PORTING}/src/process-porting.c          # replaces util/process.c
+        ${PORTING}/src/process-porting.cpp
+        ${SCRCPY}/util/rand.c
+        ${SCRCPY}/util/memory.c
+        ${SCRCPY}/util/timeout.c
+        ${SCRCPY}/util/average.c
+        ${SCRCPY}/util/str.c
+        # util/process_intr.c omitted: amalgamated by process-porting.c (see below)
+        ${SCRCPY}/util/strbuf.c
+        ${SCRCPY}/util/env.c
+        ${SCRCPY}/util/net.c
+        ${SCRCPY}/util/file.c
+        ${SCRCPY}/util/audiobuf.c
+        ${SCRCPY}/util/acksync.c
+        ${SCRCPY}/util/tick.c
+        ${SCRCPY}/util/intmap.c
+        ${SCRCPY}/util/intr.c
+        ${PORTING}/src/scrcpy-porting.c           # replaces scrcpy.c
+        ${SCRCPY}/v4l2_sink.c
+        ${PORTING}/src/screen-porting.c           # replaces screen.c
+        ${SCRCPY}/fps_counter.c
+        ${SCRCPY}/mouse_sdk.c
+        ${SCRCPY}/clock.c
+        ${SCRCPY}/frame_buffer.c
+        ${SCRCPY}/server.c
+        ${SCRCPY}/file_pusher.c
+
+        ${SCRCPY}/adb/adb.c
+        ${SCRCPY}/adb/adb_device.c
+        ${SCRCPY}/adb/adb_tunnel.c
+        ${SCRCPY}/adb/adb_parser.c
+        ${SCRCPY}/packet_merger.c
+        ${PORTING}/src/audio_regulator-porting.c  # replaces audio_regulator.c
+
+        # NB: sys/unix/process.c and util/process_intr.c are NOT compiled
+        # standalone here — process-porting.c already amalgamates them (it
+        # #includes util/process.c + sys/unix/process.c + util/process_intr.c),
+        # and process-porting.cpp supplies the hijacked sc_process_* entry
+        # points. Compiling them standalone too produces duplicate symbols
+        # under lld (the iOS Mach-O link tolerates it; the NDK link does not).
+        ${SCRCPY}/sys/unix/file.c
+        ${PORTING}/src/main-porting.c             # replaces main.c
+        ${SCRCPY}/trait/packet_source.c
+        ${SCRCPY}/trait/frame_source.c
+        ${SCRCPY}/opengl.c
+        ${SCRCPY}/version.c
+        ${SCRCPY}/hid/hid_mouse.c
+        ${SCRCPY}/hid/hid_gamepad.c
+        ${SCRCPY}/hid/hid_keyboard.c
+        ${PORTING}/src/decoder-porting.c          # replaces decoder.c
+        ${SCRCPY}/events.c
+        ${SCRCPY}/device_msg.c
+        ${SCRCPY}/input_manager.c
+        ${SCRCPY}/icon.c
+        ${PORTING}/src/audio_player-porting.c     # replaces audio_player.c
+        ${SCRCPY}/options.c
+        ${SCRCPY}/keyboard_sdk.c
+        ${SCRCPY}/delay_buffer.c
+        ${SCRCPY}/mouse_capture.c
+
+        # Android-only: weak stubs for the app/SDL-fork symbols (software path).
+        ${PORTING}/src/android-stubs.c
+        # Android-only: weak no-op stubs for adb dead-path entry points (mDNS /
+        # bonjour / emulator-command / logd-pmsg) that libadb-full.a references
+        # but does not define, so libscrcpy.so loads. See the file header.
+        ${PORTING}/src/android-adb-stubs.cpp
+        )
+
+set_target_properties(scrcpy PROPERTIES
+        OUTPUT_NAME "scrcpy"
+        C_STANDARD 11
+        # C++17: process-porting.cpp builds fine at 14, but android-adb-stubs.cpp
+        # mirrors adb's mDNS signatures which use std::optional / std::string_view
+        # (C++17). adb itself is a C++17 codebase, so 17 matches its ABI.
+        CXX_STANDARD 17)
+
+target_include_directories(scrcpy PRIVATE
+        ${PORTING}/cmake          # so `#include "porting.h"`-style relatives match iOS
+        ${PORTING}/include        # porting.h, scrcpy-porting.h
+        ${SCRCPY}                 # scrcpy core headers (and the .c #includes the port does)
+        ${GEN_DIR}                # generated config.h
+        ${DEPINC}                 # ffmpeg / openssl / adb headers
+        ${DEPINC}/SDL2            # so `#include "SDL.h"` style resolves like iOS
+        )
+
+# Force-include porting.h into every TU (mirrors iOS `-include porting.h`).
+target_compile_options(scrcpy PRIVATE -include porting.h)
+
+# scrcpy expects <SDL2/SDL.h>; DEPINC has SDL2/ under it (already added). Also map
+# the GLES headers from the NDK (porting.h includes <GLES3/gl3.h>) — provided by
+# the NDK sysroot automatically.
+
+target_compile_definitions(scrcpy PRIVATE
+        # scrcpy uses SDL_MAIN_HANDLED in main; nothing extra required here.
+        )
+
+# --- Link the prebuilt android deps + android system libs ------------------------
+# FFmpeg/openssl/adb are static .a; SDL2 is the shared .so. Wrap the static libs
+# in --start-group/--end-group to resolve their cyclic deps.
+target_link_libraries(scrcpy PRIVATE
+        -Wl,--start-group
+        ${DEPS}/libavformat.a
+        ${DEPS}/libavfilter.a
+        ${DEPS}/libavcodec.a
+        ${DEPS}/libavdevice.a
+        ${DEPS}/libswscale.a
+        ${DEPS}/libswresample.a
+        ${DEPS}/libavutil.a
+        ${DEPS}/libssl.a
+        ${DEPS}/libcrypto.a
+        ${DEPS}/libadb-full.a
+        -Wl,--end-group
+        ${DEPS}/libSDL2.so
+        # Android system libs
+        log android GLESv3 GLESv2 EGL OpenSLES m
+        )
+
+# Allow unresolved weak/app-provided symbols to stay undefined at .so link time
+# (the M2 app provides strong overrides; the smoke exe & app supply the rest).
+#
+# --allow-multiple-definition: libadb-full.a statically bundles BoringSSL, which
+# exports the same X509_*/EVP_*/etc. crypto symbols as scrcpy's OpenSSL
+# (libcrypto.a). Both archives are in the link; lld would reject the overlap.
+# We let the first definition win (adb only uses its own bundled copy via its
+# own call sites; scrcpy's TLS-free adb-host path doesn't cross the boundary).
+# TODO(M1-followup): de-dup by hiding adb's BoringSSL symbols (localize/version
+# script) so there is exactly one crypto provider.
+# The Android NDK toolchain file forces -Wl,--no-undefined on shared libs. That
+# is too strict here: (a) libadb-full.a bundles protobuf objects that reference
+# abseil/utf8_range symbols not pulled into the archive (and not needed by the
+# in-process adb-host path scrcpy actually calls), and (b) the M2 app provides
+# strong overrides for the Scrcpy* app hooks at runtime.
+# --unresolved-symbols=ignore-all comes AFTER the toolchain's --no-undefined on
+# the command line, and lld honours the last-one-wins, so it suffices to leave
+# the genuinely-unused/app-provided externs unresolved (no string-munging of the
+# toolchain flags needed).
+target_link_options(scrcpy PRIVATE
+        -Wl,--allow-shlib-undefined
+        -Wl,--unresolved-symbols=ignore-all
+        -Wl,--allow-multiple-definition
+        # -Bsymbolic binds every reference that has a definition inside the .so
+        # to that local definition. FFmpeg's internal data tables (e.g.
+        # ff_h264_cabac_tables) are referenced cross-object via R_X86_64_PC32;
+        # without -Bsymbolic lld treats them as preemptible and rejects the
+        # PC32 ("recompile with -fPIC"). Binding them locally makes the PC32
+        # link-time-resolvable with NO runtime/text relocation, so the result is
+        # TEXTREL-free and loads on bionic (API>=23). Combined with
+        # FFMPEG_DISABLE_X86ASM=1 (no asm TEXTREL), libscrcpy.so is fully clean.
+        -Wl,-Bsymbolic
+        # libadb-full.a bundles protobuf objects that pull undefined abseil /
+        # adbwifi-pairing symbols. Those live on adb's TLS-pairing / protobuf
+        # code paths, which the in-process adb-host that scrcpy uses never
+        # reaches. Force LAZY binding (override the toolchain's -z now) so the
+        # bionic loader does not eagerly resolve them at dlopen — they only
+        # matter if actually called, which the scrcpy adb-host path does not do.
+        -Wl,-z,lazy)
+# NB: FFmpeg must be built with FFMPEG_DISABLE_X86ASM=1 (see
+# make-ffmpeg-android.sh) so its x86_64 asm does not inject DT_TEXTREL.
