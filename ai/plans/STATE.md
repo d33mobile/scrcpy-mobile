@@ -36,11 +36,13 @@ asserts B reacted to that exact input; reliably green across repeated runs incl.
 cold run.
 
 ### Tasks
-- [ ] Solve A→B reachability in the harness: boot both emulators; expose B's
+- [x] Solve A→B reachability in the harness: boot both emulators; expose B's
       adb-over-tcp (`adb tcpip 5555` on B) at an address emulator A's in-process adb
       can reach (e.g. forward B:5555 to the container host, A connects via
       10.0.2.2:PORT). Verify from inside A that the target is reachable. Document the
-      address scheme.
+      address scheme. **DONE 2026-06-01 — A reaches B's adbd at `10.0.2.2:6555` via a
+      host-side socat `0.0.0.0:6555 -> 127.0.0.1:5555` bridge; verified by adbd CNXN
+      banner received inside A. See progress log + `e2e/lib-net.sh`.**
 - [ ] Put a DETERMINISTIC input target on B (a known app/activity or widget whose
       state is checkable via dumpsys/uiautomator), so a tap at a known coordinate
       produces an unambiguous, assertable state change on B.
@@ -60,6 +62,61 @@ cold run.
       incl. one cold run; 100% pass. Capture evidence.
 
 ### Progress log
+- 2026-06-01: **M3 task 1 DONE — A→B adb-over-TCP reachability solved, verified,
+  and documented. WORKING ADDRESS SCHEME: A's app connects to `10.0.2.2:6555`,
+  where a host-side `socat TCP-LISTEN:6555,fork,reuseaddr -> TCP:127.0.0.1:5555`
+  bridge fronts B's adbd. NO `adb tcpip`/`forward`/`reverse` needed.**
+  **Topology (empirically established, not assumed):** both emulators run in ONE
+  `scrcpy-e2e:dev` container (`--device /dev/kvm`, mem=1536 each). Each emulator
+  has its OWN isolated QEMU user-mode (slirp) net: guest eth0 `10.0.2.15/24`,
+  gateway `10.0.2.2`. The emulator forwards each guest's adbd to the CONTAINER-HOST
+  *loopback*: B(console 5554)→`127.0.0.1:5555`, A(console 5556)→`127.0.0.1:5557`.
+  Emulator adbd already listens on TCP — `adb tcpip` (physical-device flow) is
+  NOT needed; confirmed.
+  **The wrinkle the brief warned about is REAL:** the obvious scheme
+  `10.0.2.2:5555` from inside A does **NOT** reach B. Verbatim probe (a tiny NDK
+  x86_64 C probe `e2e/m3-tcp-probe.c` pushed to A, sends a valid adb CNXN, reads
+  the reply): `PROBE_RESULT=connect_fail host=10.0.2.2 port=5555`. Diagnostics
+  proved A's slirp gateway `10.0.2.2` does NOT route to the container host's
+  `127.0.0.1` services at all in the pinned emulator v33.1.24 —
+  `A->10.0.2.2:5037` (host adb-server) = connect_fail, and a socat listener bound
+  to `127.0.0.1:6001`→B reached via `A->10.0.2.2:6001` = connect_fail. **BUT**
+  A's `10.0.2.2` DOES reach any host service bound on `0.0.0.0` (all interfaces):
+  a socat `0.0.0.0:6002 -> 127.0.0.1:5555` bridge IS reachable from A at
+  `10.0.2.2:6002`. (Direct container-bridge IP `172.17.0.2:5555/:6000` also
+  unreachable from A — slirp NAT only routes A out via its own gateway.)
+  **STRONG VERBATIM EVIDENCE — A reached B's adbd** (final probe run, A's C probe
+  → `10.0.2.2:6555`, the lib-net socat bridge to B's `127.0.0.1:5555`):
+  ```
+  PROBE_RESULT=connected host=10.0.2.2 port=6555
+  PROBE_RESULT=reply_bytes=256
+  HEX: 43 4e 58 4e 01 00 00 01 00 00 10 00 04 01 00 00 00 00 00 00 bc b1 a7 b1
+       64 65 76 69 63 65 3a 3a 72 6f 2e 70 72 6f 64 75 63 74 2e 6e 61 6d 65 3d ...
+  ASCII: CNXN....................device::ro.product.name=sdk_gphone_x86_64;
+         ro.product.model=sdk_gphone_x86_64;ro.product.device=generic_x86_64_arm64;
+         features=sendrecv_v2_brotli,remount_shell,sendrecv_v2,abb_exec,...
+  REPLY_COMMAND_IS_CNXN=yes
+  ```
+  `43 4e 58 4e` = "CNXN" — A received B's adbd CNXN handshake banner. **Negative /
+  disambiguation:** tagged B with `setprop debug.m3.mark=m3_1780306444`; host-side
+  `adb connect 127.0.0.1:5555` read it back = `m3_1780306444` (==B), while
+  `127.0.0.1:5557` read empty (==A). So `127.0.0.1:5555` (what the bridge fronts,
+  what A's `10.0.2.2:6555` maps to) is unambiguously B's adbd, not A's own.
+  **Helper added (reusable by M3 tasks 3-5): `e2e/lib-net.sh`** — sourceable;
+  documents the scheme in a header; `ensure_b_reachable <serial_b> <adbd_b>
+  [bridge_port]` confirms B's adbd on `127.0.0.1:adbd_b`, idempotently starts the
+  `0.0.0.0:bridge -> 127.0.0.1:adbd_b` socat bridge (apt-installs socat if
+  missing), and echoes `10.0.2.2:bridge` (default `6555`); `b_target_for_a`,
+  `stop_b_bridge` for teardown. Proof harness: **`e2e/m3-reachability-probe.sh`**
+  (boots both emulators reusing run.sh's AVD/flags/boot-wait, sources lib-net,
+  compiles+pushes the C probe to A, PASS/FAILs on adbd-CNXN + marker
+  disambiguation) and the throwaway diagnostics `e2e/m3-net-diag.sh`/`-diag2.sh`.
+  Probe exit 0; container `--rm` auto-removed; socat died with it; host left clean
+  (no stray scrcpy-e2e containers/qemu/socat; mf-e2e-*/redroid/ws-scrcpy untouched).
+  **Committed:** lib-net.sh, m3-reachability-probe.sh, m3-tcp-probe.c,
+  m3-net-diag.sh, m3-net-diag2.sh, STATE. NOT committed: /artifacts (gitignored).
+  **NOTE for task 3:** the M2 ScrcpyActivity defaults host=10.0.2.2; the harness
+  must set the PORT to the bridge port (6555), not 5555.
 - 2026-06-01: **M2 AUDIT PASSED.** Skeptical audit re-verified everything with
   commands on d-claude (`scrcpy-e2e:dev`, `--device /dev/kvm`, NDK 27.2.12479018),
   trusting nothing cached. Evidence:
