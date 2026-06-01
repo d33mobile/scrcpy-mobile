@@ -75,10 +75,76 @@ cold run.
       one `bash e2e/run-on-d-claude.sh` runs the full GOAL chain and exited 0 with
       every tap on A received by B at the expected coordinate (5/5, max 1px). The M0
       placeholder is kept as a `--smoke` sub-mode. See progress log.**
-- [ ] Make it reliably green: run `bash e2e/run.sh` via run-on-d-claude.sh ≥3 times
-      incl. one cold run; 100% pass. Capture evidence.
+- [x] Make it reliably green: run `bash e2e/run.sh` via run-on-d-claude.sh ≥3 times
+      incl. one cold run; 100% pass. Capture evidence. **DONE 2026-06-01 — 4/4 runs
+      exit 0 (3 warm + 1 cold), every tap on A received by B at the expected
+      coordinate (5/5 each, max 1px error), B count==sent each run. Host self-cleaned
+      between every run (no stray scrcpy-e2e/qemu/socat/AVD; mf-e2e/redroid/ws-scrcpy
+      untouched). No flakes, no fixes needed. See progress log run-by-run table.
+      M3 ACCEPT CRITERIA MET.**
 
 ### Progress log
+- 2026-06-01: **M3 task 6 DONE — e2e is RELIABLY GREEN: 4 consecutive runs (3 warm
+  + 1 cold), 100% pass, every tap on A received by B at the expected coordinate.
+  Zero flakes; no code/script fix was required.**
+  **RUN-BY-RUN RESULTS (all via `e2e/run.sh --inner`, d-claude, scrcpy-e2e:dev,
+  --device /dev/kvm, two emulators mem=1536):**
+  ```
+  run#  type  exit  taps sent/recv  per-tap verdict          runtime
+  1     warm   0     5 / 5          5/5 PASS (4x dx=dy=0,      6m20s
+                                    p3 dx=1px) count 5/5
+  2     warm   0     5 / 5          5/5 PASS (same profile)    5m46s
+  3     warm   0     5 / 5          5/5 PASS (same profile)    6m15s
+  4     COLD   0     5 / 5          5/5 PASS (same profile)   16m49s
+  ```
+  Every run derived the SAME A->B transform `SX=1000 OX=-1000 SY=1109 OY=-70784`
+  and produced the identical per-tap evidence table — i.e. the result is stable,
+  not a lucky alignment:
+  ```
+  p1 [calibration] (324,576)  -> expect (323,568)  got (323,568)  dx=0 dy=0 PASS
+  p2 [calibration] (756,1344) -> expect (755,1420) got (755,1420) dx=0 dy=0 PASS
+  p3 [validation]  (540,960)  -> expect (539,994)  got (540,994)  dx=1 dy=0 PASS
+  p4 [validation]  (756,576)  -> expect (755,568)  got (755,568)  dx=0 dy=0 PASS
+  p5 [validation]  (324,1344) -> expect (323,1420) got (323,1420) dx=0 dy=0 PASS
+  B final tap count = 5 (sent 5)
+  ```
+  **WARM runs (1-3, `bash e2e/run-on-d-claude.sh`):** native libscrcpy.so + porting
+  build dirs cached -> `build_native` skipped the native step; `build_apks`
+  re-staged + assembled both APKs (gradle cache warm); booted B(5554)+A(5556);
+  bridged B's adbd to 10.0.2.2:6555; connected A->B (`INFO: Connected to
+  10.0.2.2:6555`, scrcpy-server `net.scrcpy.e2etarget` running on B); tapped +
+  asserted. ~6 min each.
+  **COLD run (4):** forced full from-scratch build — `docker volume rm
+  scrcpy-gradle-cache` + recreate empty; removed `output/android`,
+  `porting/build/{ffmpeg,libsdl,openssl,scrcpy}-android` + `adb-mobile-android`,
+  the staged jniLibs/assets, and both APK build dirs; invoked over ssh with
+  `FORCE_NATIVE_REBUILD=1`. The cold path **re-fetched + rebuilt every dep
+  cleanly**: FFmpeg release/6.0 re-cloned (`[ffmpeg-android] cloning ... configure
+  OK; building -j4`), SDL2 + OpenSSL re-configured + built, libscrcpy.so relinked
+  (14,111,752 B, fresh at 14:49), cold gradle build (cache repopulated 0->8
+  entries), then the full connect + tap-assert chain — all green. Native build
+  ~8 min (12:41->12:49 container clock), total 16m49s. **This confirms the task-5
+  rsync `--delete` fix holds**: the wrapper's excludes (`output/`,
+  `porting/build/`, `porting/libs/`, staged jniLibs/assets, APK build dirs) keep
+  the wiped caches wiped through rsync, and the build scripts regenerate the ffmpeg
+  source checkout (`git clone` into `porting/build/ffmpeg-android/ffmpeg-source`) +
+  all deps from the submodule sources (scrcpy + external/adb-mobile present,
+  rsynced from local). No `./configure: No such file or directory` regression. The
+  longer cold timing (different boot/build ordering) exposed **no race** — same
+  stable result.
+  **SELF-CLEAN verified after EVERY run:** 0 scrcpy-e2e containers (`--rm`), no
+  stray qemu-system, no stray socat, no e2e AVDs (created+deleted inside the
+  ephemeral container); the unrelated mf-e2e-appium-runner / mf-e2e-webdav /
+  mf-e2e-redroid / ws-scrcpy containers were never touched. RAM rule honoured: one
+  e2e run at a time (each = two 1536MB emulators), runs strictly sequential.
+  **One cosmetic, non-fatal note:** the wrapper's `rsync --delete` prints `cannot
+  delete non-empty directory: android-app/app/src/main/assets` — because
+  `assets/scrcpy-server` is excluded so the parent `assets/` dir can't be pruned;
+  rsync still returns 0 and the run is unaffected (the asset is re-staged in-build).
+  Left as-is (harmless); a follow-up could `--exclude
+  'android-app/app/src/main/assets/'` to silence it. **No source/script changes
+  were needed for task 6** — only STATE.md is committed. **M3 ACCEPT CRITERIA MET
+  -> run M3 audit next.**
 - 2026-06-01: **M3 task 5 DONE — e2e/run.sh is now the SINGLE authoritative entry
   that runs the full GOAL e2e end-to-end; one `bash e2e/run-on-d-claude.sh` exited 0
   with the goal proven (every tap on A received by B at the expected coordinate).**
