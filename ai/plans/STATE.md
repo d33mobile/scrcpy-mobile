@@ -40,7 +40,7 @@ client (connection attempt visible) without crashing.
       `libscrcpy.so` and expose a JNI/native entrypoint that calls
       `scrcpy_main(argc,argv)` on a worker thread; implement the
       `ScrcpyUpdateStatus` callback to surface status to the UI/log.
-- [ ] Minimal UI: a screen to enter target `host:port` + Connect, then hand off to
+- [x] Minimal UI: a screen to enter target `host:port` + Connect, then hand off to
       the SDL surface (remote view). Wire touches on the surface into scrcpy control
       (handled by the native SDL event loop).
 - [ ] Build the APK in `scrcpy-e2e:dev`; install it on an x86_64 emulator (use the
@@ -49,6 +49,79 @@ client (connection attempt visible) without crashing.
       is logged) WITHOUT crashing. Capture logcat evidence.
 
 ### Progress log
+- 2026-06-01: **M2 task 3 done — ScrcpyActivity (extends SDLActivity) runs scrcpy
+  under SDL's Android infra; launcher UI (host/port + Connect) hands off to it;
+  bridge exports `scrcpy_android_main`; relinked .so + APK build green.**
+  **Architecture (the correct one — implemented):** scrcpy runs as the SDL "main"
+  under `org.libsdl.app.SDLActivity` so `SDL_CreateWindow` inside `scrcpy_main`
+  returns the real SDLActivity surface — video renders into it and the SDLSurface's
+  touch/key events feed scrcpy's controller with NO extra Java wiring.
+  **New native entry (`porting/src/android-jni-bridge.c`):**
+   • `__attribute__((visibility("default"))) JNIEXPORT int
+     scrcpy_android_main(int argc, char **argv)` — LOGs argc/argv, calls
+     `scrcpy_main(argc,argv)`, LOGs + returns rc. This is the symbol
+     `SDLActivity.nativeRunMain()` dlsym's from `getMainSharedObject()`
+     (libscrcpy.so) and invokes on the dedicated SDL thread once the surface is
+     ready. (The task-2 `Java_..._runScrcpy`/`JNI_OnLoad`/`ScrcpyUpdateStatus`
+     stay — unused by this SDL path but harmless.)
+  **New `ScrcpyActivity.kt` (extends `org.libsdl.app.SDLActivity`), 4 overrides:**
+   • `getLibraries()` → `["c++_shared","SDL2","scrcpy"]` (load order: c++_shared +
+     SDL2 are NEEDED by libscrcpy.so, so first; scrcpy last = also the main .so).
+     SDL's `loadLibraries()` `System.loadLibrary`'s each, so no separate loader.
+   • `getMainSharedObject()` → `"${applicationInfo.nativeLibraryDir}/libscrcpy.so"`
+     (absolute path to the packaged lib; default would derive `libmain.so`).
+   • `getMainFunction()` → `"scrcpy_android_main"` (not the default `SDL_main`).
+   • `getArguments()` → scrcpy argv from Intent `host`/`port` extras. **argv shape
+     mirrors the iOS ADB-over-TCP client (`ScrcpyADBClient.m buildScrcpyArgs`):**
+     same option set (`--video-codec=h264 --video-bit-rate=4M --video-buffer=0
+     --audio-buffer=150 --audio-output-buffer=10 --print-fps --stay-awake
+     --shortcut-mod=lctrl,rctrl,lalt,ralt`), but the **connection target is
+     scrcpy's own `--tcpip=HOST:PORT`** (the in-process adb host in libscrcpy.so
+     does the `adb connect`) instead of the iOS app's external `adb connect` +
+     `--serial=HOST:PORT`. NOTE: the task brief suggested `--adb=tcp:...`, but that
+     flag does not exist in scrcpy 3.3.4 (`cli.c`); `--tcpip=<addr>` is the correct
+     single-arg ADB-over-TCP target. SDL prepends argv[0]. Defaults
+     127.0.0.1:5555 if extras blank. `companion newIntent(ctx,host,port)`.
+  **Launcher UI:** `MainActivity` rewritten — `res/layout/activity_main.xml`
+  (title + host EditText[default 10.0.2.2] + port EditText[default 5555] + Connect
+  Button); Connect validates non-empty then
+  `startActivity(ScrcpyActivity.newIntent(this,host,port))`. The task-2
+  auto-run-`--help`-on-launch path (and its NativeBridge wiring in MainActivity +
+  the `wip_message` string) is DROPPED — MainActivity is now purely the launcher.
+  (`NativeBridge.kt` left intact/unused — task-2 proof.) New strings:
+  host_hint/port_hint/connect/error_empty_target.
+  **Manifest:** registers `ScrcpyActivity` (`exported=false`,
+  `alwaysRetainTaskState`, `hardwareAccelerated`, `launchMode=singleInstance`,
+  `screenOrientation=user`, `theme=Theme.AppCompat.NoActionBar`, and the SDL
+  sample's `configChanges=layoutDirection|locale|orientation|uiMode|screenLayout|
+  screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation`) so SDL keeps
+  its surface across rotation/keyboard/resize. Added `<uses-permission INTERNET>`
+  + `hardwareAccelerated` on `<application>`. MainActivity stays the LAUNCHER.
+  **RELINK (d-claude, `scrcpy-e2e:dev`, NDK 27.2.12479018, `make android-scrcpy
+  TARGET_ABI=x86_64`):** 70/70 ninja, MAKE_RC=0, libscrcpy.so = 15279880 B.
+  **VERIFIED** (`llvm-nm -D`): **`T scrcpy_android_main`** now exported, alongside
+  `T scrcpy_main`, `T Java_net_scrcpy_android_NativeBridge_runScrcpy`,
+  `T JNI_OnLoad`, `T ScrcpyUpdateStatus`.
+  **APK (stage-natives.sh → `./gradlew --no-daemon assembleDebug`):** BUILD
+  SUCCESSFUL in 30s, app-debug.apk = 26.56 MB. **VERIFIED on the APK:**
+   • `unzip -l`: `lib/x86_64/{libSDL2.so 6405544, libc++_shared.so 1617608,
+     libscrcpy.so 15279880}` — the relinked .so packaged.
+   • extracted `lib/x86_64/libscrcpy.so` `llvm-nm -D` → `T scrcpy_android_main` +
+     `T scrcpy_main` (the export survives into the APK).
+   • dex class map lists `Lnet/scrcpy/android/ScrcpyActivity;`,
+     `Lnet/scrcpy/android/MainActivity;`, `Lorg/libsdl/app/SDLActivity;` (+ the
+     full vendored `org.libsdl.app.*` glue) — the Kotlin overrides type-checked
+     against SDLActivity's protected hooks (build success = compile-time proof the
+     getLibraries/getMainSharedObject/getMainFunction/getArguments signatures
+     match).
+   • `aapt2 dump xmltree` of the packaged manifest: both
+     `net.scrcpy.android.MainActivity` (line 28) and
+     `net.scrcpy.android.ScrcpyActivity` (line 44) registered.
+  (Did NOT launch the GUI Activity on-emulator — redroid on d-claude is
+  GUI-degraded; the real launch-on-emulator-A connect proof is M2 task 4.)
+  **Committed:** android-jni-bridge.c, ScrcpyActivity.kt, MainActivity.kt,
+  AndroidManifest.xml, res/layout/activity_main.xml, res/values/strings.xml, STATE.
+  NOT committed: relinked .so / APK / staged jniLibs (gitignored).
 - 2026-06-01: **M2 task 2 done — JNI bridge in libscrcpy.so + Kotlin loader +
   worker-thread scrcpy_main(--help) call, proven through real ART on-device.**
   **Native bridge (`porting/src/android-jni-bridge.c`, `#if defined(__ANDROID__)`,

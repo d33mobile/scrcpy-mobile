@@ -110,6 +110,27 @@ Java_net_scrcpy_android_NativeBridge_runScrcpy(JNIEnv *env, jclass clazz,
     return (jint) rc;
 }
 
+// SDL Android entry point. SDLActivity.nativeRunMain() dlsym's this name (the
+// ScrcpyActivity overrides getMainFunction() to return "scrcpy_android_main")
+// from getMainSharedObject() (libscrcpy.so) and calls it on the dedicated SDL
+// thread once the SDLActivity surface is ready. So SDL_CreateWindow() inside
+// scrcpy_main returns the real SDLActivity surface, video renders into it, and
+// the SDLSurface's touch events feed scrcpy's controller with no extra wiring.
+//
+// SDL passes argv[0] = the app/library name and argv[1..] = getArguments().
+// Must be exported (default visibility) so SDLActivity can dlsym it.
+__attribute__((visibility("default")))
+JNIEXPORT int
+scrcpy_android_main(int argc, char **argv) {
+    LOGI("scrcpy_android_main: argc=%d", argc);
+    for (int i = 0; i < argc; i++) {
+        LOGI("scrcpy_android_main: argv[%d]=%s", i, argv[i] ? argv[i] : "(null)");
+    }
+    int rc = scrcpy_main(argc, argv);
+    LOGI("scrcpy_android_main: scrcpy_main returned %d", rc);
+    return rc;
+}
+
 // STRONG override of the weak ScrcpyUpdateStatus default (android-stubs.c).
 // Logs the status enum + message, and forwards to a static Java callback
 // net.scrcpy.android.NativeBridge.onScrcpyStatus(int, String) if it resolves.

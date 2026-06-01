@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">scrcpy-android</string>
-    <string name="wip_message">scrcpy-android (WIP)\nAndroid-controls-Android client</string>
+    <string name="host_hint">Host (e.g. 10.0.2.2)</string>
+    <string name="port_hint">Port (e.g. 5555)</string>
+    <string name="connect">Connect</string>
+    <string name="error_empty_target">Enter both host and port</string>
 </resources>
