@@ -18,37 +18,64 @@ host = `d-claude` (ssh). Build/run scratch on d-claude under `/srv/work`.
 
 ---
 
-## Current milestone: **M1 — Native stack cross-compiled for Android x86_64**
+## Current milestone: **M2 — Android client app wraps the native lib**
 
-(M0 — Scaffolding & red-but-running pipeline — **PASSED audit 2026-06-01**, all
-5 tasks done; see progress log. Harness boots two emulators green on d-claude.)
+(M0 — Scaffolding & red-but-running pipeline — **PASSED audit 2026-06-01**.
+M1 — Native stack cross-compiled for Android x86_64 — **PASSED audit 2026-06-01**;
+all 7 tasks done; see progress log. `libscrcpy.so` + deps build green and the NDK
+smoke exe runs `scrcpy_main --help` cleanly on the bionic linker.)
 
-Accept: `libscrcpy.so` + its native deps are produced for Android `x86_64`; a tiny
-NDK smoke executable links `scrcpy_main` and prints usage/help without crashing,
-run inside `scrcpy-e2e:dev`. The iOS build must remain intact (do not break it).
-Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
+Accept: the android-app APK bundles `libscrcpy.so` + its runtime deps (`libSDL2.so`,
+`libc++_shared.so`, etc.) and the SDL Java glue; installed on an x86_64 emulator A it
+calls `scrcpy_main` against a target and the app process loads + runs the native
+client (connection attempt visible) without crashing.
 
 ### Tasks
-- [x] Add an Android NDK cross-compile path to `porting/` **without breaking the
-      iOS build**: new scripts/targets (parallel to the iOS ones) that emit into
-      `output/android/x86_64/`. Drive arch/SDK selection so iOS Makefile targets are
-      untouched. Pin NDK 27.2.12479018 (matches `scrcpy-e2e:dev`).
-- [x] Cross-compile **FFmpeg** for android x86_64 (NDK clang, `--target-os=android
-      --arch=x86_64`, software H.264 decode; no VideoToolbox).
-- [x] Cross-compile **SDL2** for android x86_64 using SDL2's native Android backend
-      (not the iOS UIKit path).
-- [x] Provide **OpenSSL** for android x86_64 (cross-build, or a vetted prebuilt /
-      NDK approach). Document choice.
-- [x] Build **adb-mobile** (`external/adb-mobile`) for android x86_64, or substitute
-      an equivalent in-process ADB path. Document choice.
-- [x] Adapt `porting/src` behind the NDK path: drop the `OpenGLES/ES3` include (use
-      SDL2 GLES), bypass VideoToolbox/Metal hijacks → software FFmpeg decode + SDL
-      texture upload, Android clipboard stub. Keep iOS code paths via `#ifdef`.
-- [x] Build **`libscrcpy.so`** for x86_64; link a tiny NDK smoke executable that
-      calls `scrcpy_main` and prints usage without crashing — run it inside
-      `scrcpy-e2e:dev` on d-claude and capture output. Commit + push when green.
+- [ ] Integrate `libscrcpy.so` + deps (`libSDL2.so`, `libc++_shared.so`, the
+      FFmpeg/openssl/adb already linked-in) + SDL Java glue
+      (`porting/vendor/sdl-android-java` `org.libsdl.app.*`) into the android-app
+      Gradle build (`jniLibs/x86_64` + `sourceSets`); app builds an APK that packages
+      them.
+- [ ] Make `MainActivity` (or an `SDLActivity` subclass) load the SDL libs +
+      `libscrcpy.so` and expose a JNI/native entrypoint that calls
+      `scrcpy_main(argc,argv)` on a worker thread; implement the
+      `ScrcpyUpdateStatus` callback to surface status to the UI/log.
+- [ ] Minimal UI: a screen to enter target `host:port` + Connect, then hand off to
+      the SDL surface (remote view). Wire touches on the surface into scrcpy control
+      (handled by the native SDL event loop).
+- [ ] Build the APK in `scrcpy-e2e:dev`; install it on an x86_64 emulator (use the
+      e2e harness emulator A) and confirm via logcat that the app loads
+      `libscrcpy.so` and enters `scrcpy_main` (a connection attempt to a `host:port`
+      is logged) WITHOUT crashing. Capture logcat evidence.
 
 ### Progress log
+- 2026-06-01: **M1 AUDIT PASSED.** Skeptical audit re-verified everything with
+  commands on d-claude (`scrcpy-e2e:dev`, NDK 27.2.12479018), did not trust the
+  cached `.so`. Evidence:
+  • **iOS intact:** every `porting/src`+`porting.h` edit is `#if defined(__APPLE__)`
+    guarded (porting.h GLES include, demuxer-porting VideoToolbox hijack) or portable
+    (controller-porting `#import`→`#include` of a guarded header — identical on
+    clang/iOS); both new stub files are `#if !defined(__APPLE__)` wrapped;
+    `Makefile.android` is additive (`include`d, nothing in the iOS `all` recipe
+    references it). Submodule pointers NOT bumped: `.gitmodules` diff empty, scrcpy
+    @fb6381f, adb-mobile @78c32c2 (the `-`-prefixed submodules are merely
+    uninitialized, not re-pointed).
+  • **Rebuilt from scratch:** deleted the cached `libscrcpy.so` + build dir, rsync'd
+    `porting/`, ran `make android-scrcpy TARGET_ABI=x86_64` (with
+    `ANDROID_NDK_ROOT=/opt/android-sdk/ndk/27.2.12479018`) → 69/69 ninja, `MAKE_RC=0`,
+    fresh `libscrcpy.so` = 15.25 MB.
+  • **Static verify** (llvm-readelf/llvm-nm): `ELF64 / DYN / X86-64`, SONAME
+    `libscrcpy.so`, **NO TEXTREL** (FLAGS=SYMBOLIC only), exports `T scrcpy_main` +
+    `T scrcpy_print_version`; NEEDED = libSDL2.so liblog.so libandroid.so libGLESv3.so
+    libGLESv2.so libEGL.so libOpenSLES.so libm.so libc++_shared.so libdl.so libc.so.
+  • **Smoke on bionic:** rebuilt `scrcpy-smoke` (RUNPATH `$ORIGIN`, NEEDED
+    libscrcpy.so+libSDL2.so), pushed it + the 3 libs into a THROWAWAY redroid-11
+    x86_64 container, ran it → bionic linker loaded all libs with no
+    dlopen/textrel/missing-symbol error, entered `scrcpy_main`, printed full scrcpy
+    3.3.4 usage/version, `[smoke] scrcpy_main returned 0`, `SMOKE_EXIT=0`. Throwaway
+    container removed; unrelated `mf-e2e-redroid-1` untouched; host left clean.
+  • **git:** all 6 M1 commits (`0200f63..d29023d`) pushed to `fork`, working tree
+    clean, no built `.so`/`.a` tracked. **→ advancing to M2.**
 - 2026-06-01: **M1 tasks 6 + 7 done — `libscrcpy.so` cross-compiled for android
   x86_64 and the NDK smoke exe runs `scrcpy_main --help` cleanly on-device. M1
   COMPLETE.**
@@ -415,7 +442,8 @@ Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
 ---
 
 ## Backlog (next milestones — see master plan for full accept criteria)
-- M1 — Native stack cross-compiled for Android x86_64 (then arm64-v8a).
+- M1 — Native stack cross-compiled for Android x86_64 — **DONE (audit passed
+  2026-06-01)**; arm64-v8a still TODO (deferred to M4).
 - M2 — Android client app wraps `libscrcpy.so` (connects to B, shows screen,
   touches propagate).
 - M3 — Full GUI-automation e2e: uiautomator taps A's remote view, assert B reacts.
