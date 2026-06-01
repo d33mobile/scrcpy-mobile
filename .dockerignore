@@ -1,0 +1,41 @@
+# Keep the e2e/Dockerfile build context (repo root) lean. The image only needs:
+#   - e2e/                          (Dockerfile + harness scripts)
+#   - android-app/                  (Gradle project, for the offline gradle-home prime)
+#   - e2e/target-app/               (Gradle project, for the prime)
+#   - porting/vendor/sdl-android-java (SDL Java glue android-app's sourceSets reference)
+# Everything else (submodules, native build trees, artifacts, git) is mounted at
+# runtime via -v "$REPO_ROOT:/workspace" — it must NOT bloat the build context.
+.git
+ai
+ios-cmake
+screenshots
+scrcpy
+scrcpy-app
+scrcpy-ios
+external
+output
+README.md
+LICENSE
+Makefile
+
+# Native build trees / outputs / artifacts (build artifacts, never in the image).
+porting/build
+porting/libs
+porting/output
+e2e/artifacts
+
+# Only porting/vendor/sdl-android-java is needed from porting/ — exclude the rest
+# of porting/ (cmake, scripts, src, etc.) from the context. The COPY in the
+# Dockerfile pulls just porting/vendor/sdl-android-java.
+porting/cmake
+porting/scripts
+porting/src
+porting/include
+porting/patches
+
+# Local gradle state / staged artifacts (regenerated at runtime).
+**/.gradle
+**/build
+android-app/app/src/main/jniLibs
+android-app/app/src/main/assets/scrcpy-server
+**/local.properties

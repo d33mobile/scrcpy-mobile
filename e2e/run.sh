@@ -56,17 +56,34 @@ outer() {
   log "OUTER: image=$IMAGE repo=$REPO_ROOT artifacts=$artifacts mode=${mode:-full}"
 
   if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    log "Image $IMAGE missing — building from e2e/Dockerfile"
-    docker build -t "$IMAGE" -f "$REPO_ROOT/e2e/Dockerfile" "$REPO_ROOT/e2e"
+    # Build context is the repo ROOT (not e2e/) because the Dockerfile's gradle-home
+    # priming layer COPYs android-app/ + e2e/target-app/ + porting/vendor/sdl-android-java
+    # — all outside e2e/. The repo-root .dockerignore keeps the context lean (submodules,
+    # native build trees, .git, artifacts are excluded; they're mounted at runtime).
+    log "Image $IMAGE missing — building from e2e/Dockerfile (context=repo root)"
+    docker build -t "$IMAGE" -f "$REPO_ROOT/e2e/Dockerfile" "$REPO_ROOT"
   else
     log "Image $IMAGE present — skipping build"
   fi
 
   [ -e /dev/kvm ] || fail "/dev/kvm not present on host — x86_64 emulators need KVM"
 
-  log "Launching INNER container (docker run --device /dev/kvm)"
+  # The e2e is hermetic by DEFAULT: the inner container gets NO network. Every build
+  # input is baked into the image (apt tools, Android SDK/NDK, native source, and the
+  # offline GRADLE_USER_HOME=/opt/gradle-home seeded with the gradle-8.9 distribution +
+  # all AGP/Maven deps). Set E2E_ALLOW_NET=1 ONLY to debug / re-prime against the network.
+  local netarg="--network none"
+  if [ "${E2E_ALLOW_NET:-0}" = "1" ]; then
+    netarg=""
+    log "E2E_ALLOW_NET=1 — inner container gets network (NON-hermetic; debug only)"
+  else
+    log "inner container runs with --network none (hermetic)"
+  fi
+
+  log "Launching INNER container (docker run --device /dev/kvm $netarg)"
   set +e
   docker run --rm \
+    $netarg \
     --device /dev/kvm \
     -v "$REPO_ROOT:/workspace" \
     -v scrcpy-gradle-cache:/root/.gradle \
@@ -243,12 +260,25 @@ build_apks() {
   if [ "$SKIP_BUILD" = "1" ] && [ -f "$APK" ] && [ -f "$TARGET_APK" ]; then
     log "SKIP_BUILD=1 and both APKs present — reusing"; return 0
   fi
+  # Use the OFFLINE gradle home baked into the image (GRADLE_USER_HOME=/opt/gradle-home,
+  # seeded at image-build time with the gradle-8.9 distribution + all AGP/Maven deps)
+  # and pass --offline so the build NEVER reaches the network. This makes the run
+  # hermetic with NO persistent gradle volume required (the scrcpy-gradle-cache mount
+  # is now an optional speed cache, not a correctness dependency). GRADLE_USER_HOME is
+  # set in the image; we assert + re-export defensively. --offline + --network none means
+  # any un-baked artifact fails loudly instead of silently fetching.
+  local gradle_home="${GRADLE_USER_HOME:-/opt/gradle-home}"
+  [ -d "$gradle_home/wrapper/dists" ] \
+    || fail "offline GRADLE_USER_HOME not primed at $gradle_home — rebuild scrcpy-e2e:dev from e2e/Dockerfile"
+  export GRADLE_USER_HOME="$gradle_home"
+  log "using offline GRADLE_USER_HOME=$GRADLE_USER_HOME (--offline; baked gradle dist + deps)"
+
   log "staging natives + scrcpy-server asset + building android-app APK"
   ( cd "$APP_DIR" && ./stage-natives.sh "$NATIVE_OUT" "$TARGET_ABI" )
-  ( cd "$APP_DIR" && ./gradlew --no-daemon assembleDebug )
+  ( cd "$APP_DIR" && ./gradlew --no-daemon --offline assembleDebug )
   [ -f "$APK" ] || fail "android-app APK not produced at $APK"
   log "building target-app APK"
-  ( cd "$TARGET_DIR" && ./gradlew --no-daemon assembleDebug )
+  ( cd "$TARGET_DIR" && ./gradlew --no-daemon --offline assembleDebug )
   [ -f "$TARGET_APK" ] || fail "target-app APK not produced at $TARGET_APK"
   log "APKs built:"; ls -la "$APK" "$TARGET_APK" >&2
 }

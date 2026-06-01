@@ -62,8 +62,13 @@ run is green; then the goal is declared fully realized.
       (no /system/bin/linker64), so it is ELF-verified-only + explicitly
       NOT-tested-on-real-device. abiFilters now lists both ABIs; APK packages both;
       x86_64 e2e path unaffected. See progress log 2026-06-01.
-- [ ] **FULL COLD HERMETICITY — bake the Gradle distribution + Maven/AGP deps into the
+- [x] **FULL COLD HERMETICITY — bake the Gradle distribution + Maven/AGP deps into the
       image** so a TRULY cold `--network none` run (gradle volume ALSO cleared) is green.
+      DONE 2026-06-01 — see progress log (gradle-8.9 dist + AGP 8.7.3 + Kotlin 2.0.21 +
+      AndroidX baked into an offline `GRADLE_USER_HOME=/opt/gradle-home`; run.sh builds with
+      that home + `--offline`; inner `docker run` now defaults to `--network none`; proven by a
+      from-absolute-scratch (gradle volume removed + native caches wiped, IMAGE ONLY)
+      `--network none` run → SUCCESS, 5/5 taps, exit 0, zero network fetches).
       The native-source fix (done) exposed the next layer: with the persistent
       `scrcpy-gradle-cache` volume emptied, Gradle fetches `gradle-8.9-bin.zip` +
       AGP/Maven artifacts over the network (`UnknownHostException`). Bake an offline
@@ -116,6 +121,90 @@ run is green; then the goal is declared fully realized.
       passes, the loop STOPS.
 
 ### Progress log
+- 2026-06-01: **FULL COLD HERMETICITY (Gradle) — DONE. The Gradle distribution + ALL
+  AGP/Kotlin/AndroidX/Maven dependencies are now baked into the image as an offline
+  `GRADLE_USER_HOME=/opt/gradle-home`; run.sh builds both APKs with that home + `--offline`,
+  and the inner `docker run` now defaults to `--network none`. PROVEN by a from-ABSOLUTE-scratch
+  (persistent `scrcpy-gradle-cache` volume REMOVED + native caches/outputs/staged-libs/APK
+  build dirs wiped — IMAGE ONLY) `--network none` e2e that cross-compiled the WHOLE native
+  stack offline AND built both APKs offline AND reached the SUCCESS banner + 5/5
+  coordinate-faithful taps, exit 0, with ZERO network fetches.**
+  **WHAT WAS BAKED (e2e/Dockerfile, one new layer APPENDED AFTER the SDK/NDK/apt/native-src
+  layers so they stay CACHED):** `ENV GRADLE_USER_HOME=/opt/gradle-home`, then COPY the two real
+  Gradle projects (`android-app` + `e2e/target-app`) and the SDL Java glue they reference
+  (`porting/vendor/sdl-android-java`) into `/opt/prime`, and at IMAGE-build time (network
+  allowed) run `./gradlew --no-daemon assembleDebug` for BOTH against `GRADLE_USER_HOME=
+  /opt/gradle-home`. That single resolve downloaded (a) the `gradle-8.9-bin` wrapper distribution
+  into `/opt/gradle-home/wrapper/dists`, and (b) every AGP 8.7.3 / Kotlin 2.0.21 / AndroidX
+  (core-ktx 1.13.1, appcompat 1.7.0, …) Maven artifact into `caches/modules-2`. The native .so /
+  scrcpy-server asset are NOT staged at prime time (build artifacts) — assembleDebug just packages
+  an empty jniLibs / no asset, which is fine (the SOLE purpose is populating the dep cache; the
+  runtime build stages the real libs/assets from the MOUNTED /workspace and packages them). After
+  priming: `./gradlew --stop`, drop the primed projects' `app/build` + `.gradle` (keep only the
+  populated cache), `chmod -R a+rwX /opt/gradle-home` (writable at runtime). The build CONTEXT was
+  switched from `e2e/` to the repo ROOT (the COPYs are outside e2e/) with a new repo-root
+  `.dockerignore` that keeps the context lean (excludes .git/submodules/native build trees/
+  artifacts — all mounted at runtime, never in the image).
+  **IMAGE VERIFY (rebuilt scrcpy-e2e:dev on d-claude; SDK/NDK + apt + native-src layers all
+  CACHED — only COPY + the gradle-prime layer ran, ~3m):**
+  ```
+  $ docker run --rm scrcpy-e2e:dev bash -lc 'echo $GRADLE_USER_HOME; ls /opt/gradle-home/wrapper/dists; du -sh /opt/gradle-home'
+  GRADLE_USER_HOME=/opt/gradle-home
+  CACHEDIR.TAG   gradle-8.9-bin
+  581M  /opt/gradle-home
+  # AGP present: .../com.android.tools.build/gradle/8.7.3/.../gradle-8.7.3.jar
+  # Kotlin present: .../org.jetbrains.kotlin/kotlin-gradle-plugin/2.0.21/.../kotlin-gradle-plugin-2.0.21-gradle85.jar
+  # AndroidX present: caches/modules-2/files-2.1/{androidx.core,androidx.appcompat,...}
+  ```
+  **run.sh CHANGES (minimal):** (1) OUTER `docker build` context → repo ROOT (`"$REPO_ROOT"`
+  instead of `"$REPO_ROOT/e2e"`); (2) OUTER inner `docker run` now passes `--network none` BY
+  DEFAULT (escape hatch `E2E_ALLOW_NET=1` only for re-priming/debug); (3) `build_apks` asserts +
+  exports `GRADLE_USER_HOME=/opt/gradle-home` and builds with `./gradlew --no-daemon --offline
+  assembleDebug` for BOTH projects — so the build NEVER reaches the network and needs NO
+  persistent gradle volume (the `scrcpy-gradle-cache` mount is now an unused optional speed cache;
+  GRADLE_USER_HOME overrides it). The baked `--offline` + `--network none` means any un-baked
+  artifact fails LOUDLY instead of silently fetching.
+  **AUTHORITATIVE FROM-ABSOLUTE-SCRATCH `--network none` PROOF (d-claude, scrcpy-e2e:dev, --device
+  /dev/kvm, 2×mem=1536):** procedure — `docker volume rm scrcpy-gradle-cache` (NOT recreated —
+  IMAGE ONLY); wiped `output/android` + `porting/build/{ffmpeg,libsdl,openssl,scrcpy,adb-mobile}-android`
+  + `porting/libs` + staged jniLibs/scrcpy-server asset + both APK `app/build`/`.gradle`/`build`;
+  then `FORCE_NATIVE_REBUILD=1 bash e2e/run.sh` (inner now defaults to `--network none`). RESULT —
+  exit 0. Log VERBATIM: outer `inner container runs with --network none (hermetic)` →
+  `Launching INNER container (docker run --device /dev/kvm --network none)`. Native rebuilt cold
+  OFFLINE from pre-staged source: `[ffmpeg-android] using pre-staged FFmpeg source at
+  /opt/native-src/ffmpeg (offline)`, `[libsdl-android] using pre-staged tarball
+  /opt/native-src/SDL2-2.32.8.tar.gz (offline)`, `[openssl-android] using pre-staged tarball
+  /opt/native-src/openssl-1.1.1w.tar.gz (offline)`, `[70/70] Linking CXX shared library
+  libscrcpy.so` (14,108,248 B). APKs built OFFLINE from the baked home:
+  `using offline GRADLE_USER_HOME=/opt/gradle-home (--offline; baked gradle dist + deps)`,
+  `BUILD SUCCESSFUL in 18s` + `BUILD SUCCESSFUL in 12s` (app-debug 25,476,517 B; target 816,473 B).
+  Stream `INFO: Connected to 10.0.2.2:6555`, scrcpy-server `net.scrcpy.e2etarget` on B. 5/5
+  coordinate-faithful taps:
+  ```
+  Derived A->B transform (scaled x1000): SX=1000 OX=-1000 SY=1109 OY=-70784
+  p1 [calibration] (324,576)  -> expect (323,568)  got (323,568)  dx=0 dy=0 PASS
+  p2 [calibration] (756,1344) -> expect (755,1420) got (755,1420) dx=0 dy=0 PASS
+  p3 [validation]  (540,960)  -> expect (539,994)  got (540,994)  dx=1 dy=0 PASS
+  p4 [validation]  (756,576)  -> expect (755,568)  got (755,568)  dx=0 dy=0 PASS
+  p5 [validation]  (324,1344) -> expect (323,1420) got (323,1420) dx=0 dy=0 PASS
+  B final tap count = 5 (sent 5)   COLD_NETNONE_EXIT=0
+  15:24:48 [run.sh] ==================== SUCCESS (e2e green) ====================
+  ```
+  **ZERO-NETWORK GREP of the full ~1.1MB run log (all 0):** `git clone`=0, `Cloning into`=0,
+  `curl`=0, `^Get:`(apt)=0, `Could not resolve host`=0, `UnknownHostException`=0, `Downloading
+  http`=0, `dl.google.com`=0, `services.gradle.org`=0, `repo.maven`=0, `Network is unreachable`=0,
+  `Failed to connect`=0, `Temporary failure in name resolution`=0. (The only `downloading` hits —
+  2 — are the libsdl/openssl scripts' INTENT log lines, each IMMEDIATELY followed by `using
+  pre-staged tarball ... (offline)`, i.e. no actual fetch.) Combined with `--network none` (any
+  stray fetch would have UnknownHost-failed), this proves the WHOLE harness — native cross-compile
+  + both Gradle APK builds + boot + connect + tap-assert — is now hermetic from absolute scratch
+  with NO external state but the image.
+  **SELF-CLEAN:** all `docker run --rm`; after the run — 0 scrcpy-e2e containers, 0 qemu-system,
+  0 socat-6555, cleanup rc=0; mf-e2e-* / redroid / ws-scrcpy untouched; one e2e at a time (RAM rule
+  honoured). **COMMITTED (source/scripts/state only — gradle dist+deps live in the IMAGE, not
+  git):** e2e/Dockerfile, e2e/run.sh, .dockerignore (new), STATE.md. NOT committed: any
+  .so/.a/.apk/jniLibs/assets/artifacts/caches. NEXT: M4 docs-honesty task (README full-offline
+  hermeticity wording), then the FINAL goal audit.
 - 2026-06-01: **HERMETIC NATIVE SOURCE — DONE. The native build no longer fetches SOURCE
   over the network: the three native deps are baked into the e2e image and the build
   scripts copy/extract from them offline. PROVEN by a cold-native `--network none` e2e that

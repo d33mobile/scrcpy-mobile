@@ -128,4 +128,52 @@ RUN mkdir -p ${NATIVE_SRC_DIR} \
         -O ${NATIVE_SRC_DIR}/openssl-1.1.1w.tar.gz ) \
     && ls -la ${NATIVE_SRC_DIR}
 
+# ---------------------------------------------------------------------------
+# Pre-primed OFFLINE Gradle home (FULL COLD hermeticity).
+# ---------------------------------------------------------------------------
+# Even with the native source baked, a TRULY cold run (the persistent
+# scrcpy-gradle-cache volume cleared / not mounted) still fetched the Gradle
+# DISTRIBUTION (gradle-8.9-bin.zip from services.gradle.org) plus the AGP 8.7.3 /
+# Kotlin 2.0.21 / AndroidX Maven artifacts from dl.google.com + repo.maven.* over
+# the network -> UnknownHostException under `--network none`.
+#
+# Here we PRIME an offline GRADLE_USER_HOME=/opt/gradle-home at IMAGE-build time
+# (network allowed during build; only the RUNTIME must be hermetic): we COPY the
+# two real Gradle projects (android-app + e2e/target-app) and the SDL Java glue
+# they reference, then run `assembleDebug` for BOTH with GRADLE_USER_HOME pointing
+# at /opt/gradle-home. That single resolve downloads (a) the gradle-8.9 wrapper
+# distribution into wrapper/dists, and (b) every AGP/Kotlin/AndroidX/Maven
+# artifact the build needs into caches/modules-2 — exactly what a runtime
+# `--offline` build replays. The native .so / scrcpy-server asset are NOT staged
+# here (they're build artifacts) — assembleDebug simply packages an empty jniLibs /
+# no scrcpy-server asset, which is fine: the SOLE purpose is populating the dep cache
+# (the runtime build stages the real libs/assets and packages them).
+#
+# Requires the repo ROOT as the docker build context (see e2e/run.sh `outer`):
+# COPY paths are repo-root-relative. The COPY'd projects live under /opt/prime and
+# do NOT shadow the mounted /workspace at runtime — they only seed /opt/gradle-home.
+ENV GRADLE_USER_HOME=/opt/gradle-home
+COPY android-app /opt/prime/android-app
+COPY e2e/target-app /opt/prime/target-app
+COPY porting/vendor/sdl-android-java /opt/prime/porting/vendor/sdl-android-java
+RUN set -eux; \
+    sdk_cmake_dir="$(ls -d ${ANDROID_SDK_ROOT}/cmake/*/bin 2>/dev/null | sort -V | tail -1)"; \
+    export PATH="$sdk_cmake_dir:$PATH"; \
+    # android-app's sourceSets reference ../../porting/vendor/sdl-android-java; the
+    # COPY above places it at /opt/prime/porting/vendor/... so the relative path
+    # (/opt/prime/android-app -> ../../porting/...) resolves identically.
+    ( cd /opt/prime/android-app \
+        && ./gradlew --no-daemon assembleDebug ); \
+    ( cd /opt/prime/target-app \
+        && ./gradlew --no-daemon assembleDebug ); \
+    # Stop any lingering daemon, drop the primed projects' build outputs (keep only
+    # the populated /opt/gradle-home cache), and make the gradle home world-writable
+    # so the runtime (non-root or root) can write lock files / new caches into it.
+    ( cd /opt/prime/android-app && ./gradlew --stop >/dev/null 2>&1 || true ); \
+    rm -rf /opt/prime/android-app/app/build /opt/prime/android-app/.gradle \
+           /opt/prime/target-app/app/build /opt/prime/target-app/.gradle; \
+    chmod -R a+rwX /opt/gradle-home; \
+    ls /opt/gradle-home/wrapper/dists; \
+    du -sh /opt/gradle-home
+
 WORKDIR /workspace
