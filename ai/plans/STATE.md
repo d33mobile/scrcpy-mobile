@@ -62,9 +62,19 @@ run is green; then the goal is declared fully realized.
       (no /system/bin/linker64), so it is ELF-verified-only + explicitly
       NOT-tested-on-real-device. abiFilters now lists both ABIs; APK packages both;
       x86_64 e2e path unaffected. See progress log 2026-06-01.
-- [ ] FINAL goal audit: clear caches, run `bash e2e/run.sh` cold once more green;
-      confirm hermeticity + docs; then declare the locked goal FULLY REALIZED in
-      STATE.md. (When this passes, the loop should stop.)
+- [ ] **FULL COLD HERMETICITY — bake the Gradle distribution + Maven/AGP deps into the
+      image** so a TRULY cold `--network none` run (gradle volume ALSO cleared) is green.
+      The native-source fix (done) exposed the next layer: with the persistent
+      `scrcpy-gradle-cache` volume emptied, Gradle fetches `gradle-8.9-bin.zip` +
+      AGP/Maven artifacts over the network (`UnknownHostException`). Bake an offline
+      `GRADLE_USER_HOME` into e2e/Dockerfile: stage the gradle-8.9 distribution and
+      pre-resolve the android-app + target-app dependencies at IMAGE-build time (e.g.
+      run a one-off `assembleDebug` / dependency-prefetch during the build into a baked
+      cache), then have run.sh use that baked GRADLE_USER_HOME with `--offline`. ALSO
+      make `e2e/run.sh` run the INNER container with `--network none` BY DEFAULT (the
+      harness should be hermetic by default, not only when invoked by hand). PROVE: a
+      from-absolute-scratch run (native caches + gradle volume cleared, image only) under
+      `--network none` reaches the SUCCESS banner with 5/5 taps, zero network fetches.
 - [x] **FIX HERMETICITY ON A COLD CACHE (audit FAIL 2026-06-01) — DONE 2026-06-01** (native
       SOURCE now baked into the image + scripts copy/extract from it offline; cold
       `--network none` native rebuild proven green, see progress log). The native build was
@@ -94,6 +104,16 @@ run is green; then the goal is declared fully realized.
       native sources per the task above + add `--network none` to the outer `docker run`),
       or (b) until then, soften the README to say the APK/run half is hermetic while the
       cold native build still fetches FFmpeg/SDL2/OpenSSL source over the network.
+      Once the native-source + Gradle baking are both done, make the README claim full
+      offline hermeticity TRUTHFULLY (it is the accurate end state), and document the
+      `--network none` default + the image-build-time (networked, one-time) provisioning.
+- [ ] FINAL goal audit (LAST — run only after the two unchecked tasks above are done):
+      from absolute scratch (native caches + gradle volume cleared, image only), run
+      `bash e2e/run.sh` under `--network none` and confirm green — SUCCESS banner,
+      `Connected to 10.0.2.2:6555`, scrcpy-server on B, 5/5 coordinate-faithful taps,
+      zero network fetches — plus honest docs + iOS-intact + pushed. Then declare the
+      locked goal FULLY REALIZED in STATE.md (Current milestone → DONE). When this
+      passes, the loop STOPS.
 
 ### Progress log
 - 2026-06-01: **HERMETIC NATIVE SOURCE — DONE. The native build no longer fetches SOURCE
