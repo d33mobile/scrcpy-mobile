@@ -37,7 +37,7 @@ Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
       --arch=x86_64`, software H.264 decode; no VideoToolbox).
 - [x] Cross-compile **SDL2** for android x86_64 using SDL2's native Android backend
       (not the iOS UIKit path).
-- [ ] Provide **OpenSSL** for android x86_64 (cross-build, or a vetted prebuilt /
+- [x] Provide **OpenSSL** for android x86_64 (cross-build, or a vetted prebuilt /
       NDK approach). Document choice.
 - [ ] Build **adb-mobile** (`external/adb-mobile`) for android x86_64, or substitute
       an equivalent in-process ADB path. Document choice.
@@ -49,6 +49,22 @@ Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
       `scrcpy-e2e:dev` on d-claude and capture output. Commit + push when green.
 
 ### Progress log
+- 2026-06-01: **M1 task 4 done — OpenSSL cross-compiled for android x86_64.** New
+  `porting/scripts/make-openssl-android.sh` (mirrors the FFmpeg/SDL android-driver
+  style; iOS untouched). **OpenSSL 1.1.1w** (matches the iOS OpenSSL-for-iPhone 1.1.1
+  series, for ABI/API parity). Configured `./Configure android-x86_64
+  -D__ANDROID_API__=26 no-shared no-tests` via the NDK clang (`x86_64-linux-
+  android26-clang`, on PATH from android-defines.sh). Produced **libcrypto.a (5.2 MB)
+  + libssl.a (1.0 MB)** + headers into `output/android/x86_64/` (the canonical
+  output dir, same place ffmpeg/sdl land). VERIFIED on d-claude in `scrcpy-e2e:dev`:
+  build rc=0 / "[openssl-android] DONE"; `nm` shows defined `T OPENSSL_init_crypto`
+  (libcrypto) and `T SSL_new` (libssl); archive has 637 object members all compiled
+  by the android NDK clang. apt deps `make perl` installed per-run.
+  PROCESS NOTE: the first attempt was launched by the iteration subagent as a
+  background task and got TORN DOWN when that subagent paused (un-resumable) — the
+  build was re-launched as a parent-session harness-tracked task and finished clean.
+  Going forward, heavy builds should run BLOCKING in the subagent's own context (or
+  be launched by the parent) so they aren't killed.
 - 2026-06-01: **M1 task 3 done — SDL2 cross-compiled for android x86_64 (native
   Android backend).** New `porting/scripts/make-libsdl-android.sh` (mirrors the
   iOS `make-libsdl.sh` STYLE but retargets the NDK; iOS script untouched). **Same
