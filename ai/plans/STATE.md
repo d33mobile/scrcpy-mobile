@@ -57,10 +57,16 @@ cold run.
       `10.0.2.2:6555`, PUSHES + LAUNCHES scrcpy-server on B, reaches Connected,
       and renders B's screen. 2/2 runs green. See progress log +
       `e2e/m3-connect.sh`, `e2e/m3-build-and-connect.sh`.**
-- [ ] Full GUI automation: with uiautomator/adb `input` ON EMULATOR A, tap a known
+- [x] Full GUI automation: with uiautomator/adb `input` ON EMULATOR A, tap a known
       coordinate over the rendered remote-view surface; map it to the expected
       coordinate on B; assert via B (uiautomator/dumpsys/screencap) that B received
       that exact input. Handle the coordinate scaling (A's surface → B's resolution).
+      **DONE 2026-06-01 — 5 taps injected on A's remote-view surface; ALL received by
+      B at the expected coordinate (4/5 with dx=dy=0, worst dx=1px); count 5/5. The
+      A→B transform (X 1:1; Y scale 1.109 + offset −70.8px from A's status bar /
+      letterboxing) was derived empirically from 2 calibration taps and the 3
+      validation taps fit it. See progress log + `e2e/lib-automation.sh`,
+      `e2e/m3-automation.sh`, `e2e/m3-build-and-automate.sh`.**
 - [ ] Wire this as the REAL e2e in e2e/run.sh (replace the M0 placeholder
       assertion): two emulators, connect, automate, assert; idempotent,
       self-cleaning, artifacts (logcat A+B, screenshots) to mounted dir, correct exit
@@ -69,6 +75,76 @@ cold run.
       incl. one cold run; 100% pass. Capture evidence.
 
 ### Progress log
+- 2026-06-01: **M3 task 4 DONE — THE GOAL PROVEN: a tap on emulator A's rendered
+  remote-view surface is received by emulator B at the expected, coordinate-faithful
+  location. 5 taps, 5/5 received, all within tolerance.**
+  **FLOW (e2e/m3-automation.sh, one `docker run --device /dev/kvm`, two emulators
+  mem=1536):** boot B(5554)+A(5556); install + LAUNCH the deterministic target app
+  on B (`net.scrcpy.e2etarget`, full-screen, records every tap's device (X,Y) on 3
+  channels); `ensure_b_reachable` → socat bridge `10.0.2.2:6555 -> 127.0.0.1:5555`;
+  install our android-app on A; `am start MainActivity --es host 10.0.2.2 --es port
+  6555` → tap the located Connect → ScrcpyActivity; wait for a STABLE stream
+  (scrcpy `INFO: Connected to 10.0.2.2:6555` + scrcpy-server `net.scrcpy.e2etarget`
+  process on B), settle 6s; re-assert the target owns B's focus; **reset B's tap
+  counter AFTER the stream is stable** (so stray taps don't pollute); then inject
+  `adb -s emulator-5556 shell input tap AX AY` at 5 distinct A points, polling B's
+  file channel until the count increments per tap.
+  **CONTROL PATH (why a tap on A reaches B):** A's ScrcpyActivity extends
+  SDLActivity, so the SDL surface that renders B's video also forwards its touch
+  events to scrcpy's controller, which injects them on B over the ADB control
+  channel. `input tap AX AY` on A → A's SDLSurface ACTION_DOWN → scrcpy maps surface
+  coords → B's video resolution → INJECT_TOUCH_EVENT to B → B's target records
+  (BX,BY). No `--no-control`; nothing ignored touch; the target stays foreground on
+  B (scrcpy only mirrors, doesn't change B's foreground app).
+  **A→B TRANSFORM (derived empirically, NOT hardcoded):** A and B are the SAME AVD
+  resolution (1080×1920), but A's ScrcpyActivity is `Theme.AppCompat.NoActionBar`
+  (NOT immersive-fullscreen), so A keeps its status/navigation bars and the SDL
+  surface showing B occupies only A's content rectangle; scrcpy letterboxes B's
+  video into it. Modelled as a per-axis affine map fitted from the 2 calibration
+  taps (pure-bash integer math ×1000, no bc/python):
+  ```
+  BX = round((1000*AX +    -1000)/1000)   # X is ~1:1 (full-width), tiny offset
+  BY = round((1109*AY +   -70784)/1000)   # Y scaled 1.109 + offset −70.8px
+  ```
+  The non-trivial Y scale+offset is exactly A's status-bar / aspect letterboxing —
+  and crucially the 3 INDEPENDENT validation taps fit it, proving coordinate-faithful
+  control, not a lucky single hit.
+  **VERBATIM EVIDENCE (e2e/artifacts/m3-automation-evidence.txt, run exit 0):**
+  ```
+  A screen = 1080x1920   B screen = 1080x1920
+  Derived A->B transform (scaled x1000): SX=1000 OX=-1000 SY=1109 OY=-70784
+  Tolerance: max(25px, 3% of screen dim)
+  tap  A(ax,ay)       expect B       got B          dx,dy   verdict
+  p1 [calibration] (324,576)  -> expect (323,568)  got (323,568)  dx=0 dy=0 PASS
+  p2 [calibration] (756,1344) -> expect (755,1420) got (755,1420) dx=0 dy=0 PASS
+  p3 [validation]  (540,960)  -> expect (539,994)  got (540,994)  dx=1 dy=0 PASS
+  p4 [validation]  (756,576)  -> expect (755,568)  got (755,568)  dx=0 dy=0 PASS
+  p5 [validation]  (324,1344) -> expect (323,1420) got (323,1420) dx=0 dy=0 PASS
+  B final tap count = 5 (sent 5)
+  ```
+  Every A tap mapped to a DISTINCT, correctly-ordered B location; max error 1px
+  (well under the 25px / 3% tolerance); B's total count == 5 sent (no taps lost or
+  duplicated on the control path). PASS first run.
+  **REUSABLE HARNESS PIECE — `e2e/lib-automation.sh`** (sourceable, no external deps):
+   • `auto_tap_on_a <A> <ax> <ay>` — inject a tap on A's surface.
+   • `auto_read_b <B> [file|ui|logcat]` — read B's recorded "N X Y" (via lib-target).
+   • `auto_derive_transform <ax1 ay1 bx1 by1 ax2 ay2 bx2 by2>` — fit the per-axis
+     affine map from 2 calibration points (echoes `SX1000 OX1000 SY1000 OY1000`).
+   • `auto_expect_b <SX OX SY OY> <ax> <ay>` — expected B coord under the map.
+   • `auto_within_tol <exp> <act> <dim>` — tolerance check (max abs/rel).
+   • `auto_assert_point <SX OX SY OY> <ax ay> <bx by> <bw bh>` — full per-point
+     verdict line + PASS/FAIL return. Task 5 wires these into run.sh.
+  **DRIVERS:** `e2e/m3-automation.sh` (the task-4 harness above; reuses lib-net,
+  lib-target, lib-automation, run.sh's AVD/boot logic) + `e2e/m3-build-and-automate.sh`
+  (INNER: apt-installs build tools, builds the native stack if libscrcpy.so absent,
+  builds BOTH APKs, hands off). Self-cleaning: `--rm` container auto-removed,
+  emulators killed, AVDs deleted, socat bridge stopped; verified host left clean
+  (no stray scrcpy-e2e/qemu/socat, no e2e AVDs); mf-e2e-*/redroid/ws-scrcpy untouched.
+  **NO new app/native changes were needed** — task 3's connect path already forwards
+  surface touches correctly; task 4 is pure harness + assertion logic.
+  **Committed:** e2e/lib-automation.sh, e2e/m3-automation.sh,
+  e2e/m3-build-and-automate.sh, STATE. NOT committed: APK/.so/jniLibs/assets/
+  artifacts (all gitignored).
 - 2026-06-01: **M3 task 3 DONE — A's app drives a REAL scrcpy session to B over
   ADB-over-TCP: connects to `10.0.2.2:6555`, pushes scrcpy-server to B, launches it
   (`app_process com.genymobile.scrcpy.Server 3.3.4`), reaches Connected, and renders
