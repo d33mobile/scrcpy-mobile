@@ -36,7 +36,7 @@ client (connection attempt visible) without crashing.
       (`porting/vendor/sdl-android-java` `org.libsdl.app.*`) into the android-app
       Gradle build (`jniLibs/x86_64` + `sourceSets`); app builds an APK that packages
       them.
-- [ ] Make `MainActivity` (or an `SDLActivity` subclass) load the SDL libs +
+- [x] Make `MainActivity` (or an `SDLActivity` subclass) load the SDL libs +
       `libscrcpy.so` and expose a JNI/native entrypoint that calls
       `scrcpy_main(argc,argv)` on a worker thread; implement the
       `ScrcpyUpdateStatus` callback to surface status to the UI/log.
@@ -49,6 +49,86 @@ client (connection attempt visible) without crashing.
       is logged) WITHOUT crashing. Capture logcat evidence.
 
 ### Progress log
+- 2026-06-01: **M2 task 2 done — JNI bridge in libscrcpy.so + Kotlin loader +
+  worker-thread scrcpy_main(--help) call, proven through real ART on-device.**
+  **Native bridge (`porting/src/android-jni-bridge.c`, `#if defined(__ANDROID__)`,
+  added to `scrcpy-android-CMakeLists.txt` source list):**
+   • `JNIEXPORT jint Java_net_scrcpy_android_NativeBridge_runScrcpy(JNIEnv*,
+     jclass, jobjectArray)` — converts the Java `String[]` → NUL-terminated
+     argc/argv (`GetStringUTFChars`+`strdup`, freed after the call), `LOGI`s
+     entry + each argv, calls `scrcpy_main(argc,argv)` on the CALLING (worker)
+     thread, `LOGI`s the return code, frees argv, returns the int.
+   • STRONG `void ScrcpyUpdateStatus(enum ScrcpyStatus, const char*)` — overrides
+     the weak default in `scrcpy-porting.c` (and the weak one in `android-stubs.c`);
+     `__android_log_print`s status+message under tag "scrcpy", then best-effort
+     forwards to `net.scrcpy.android.NativeBridge.onScrcpyStatus(int,String)`
+     (GetEnv/AttachCurrentThread, never throws back across JNI).
+   • `jint JNI_OnLoad(JavaVM*,void*)` caches the `JavaVM*` (for the status
+     forward), returns `JNI_VERSION_1_6`.
+   • Load order: libscrcpy.so NEEDs libSDL2.so + libc++_shared.so, so
+     `NativeBridge.load()` does `System.loadLibrary("c++_shared")` →
+     `"SDL2"` → `"scrcpy"` (idempotent, `@Synchronized`).
+  **Kotlin:** new `NativeBridge.kt` (`object`, `external fun runScrcpy`,
+  `@JvmStatic onScrcpyStatus`, `statusListener` for the UI); `MainActivity`
+  spawns a `"scrcpy-native"` worker `Thread` → `load()` →
+  `runScrcpy(arrayOf("scrcpy","--help"))`, logs the rc, surfaces status into a
+  `TextView` via the listener.
+  **RELINK (must-fix bug found + fixed):** rebuilt libscrcpy.so WITH the bridge
+  on d-claude (`scrcpy-e2e:dev`, NDK 27.2.12479018, `make android-scrcpy
+  TARGET_ABI=x86_64`, 70/70 ninja, MAKE_RC=0). First relink loaded fine for
+  libc++_shared+libSDL2 but **`dlopen failed: cannot locate symbol "uncompress"`**
+  (a real UnsatisfiedLinkError) when ART loaded libscrcpy.so: adb's libziparchive
+  (in libadb-full.a) + FFmpeg pull zlib's `uncompress`/`inflate*`/`crc32`, but
+  `libz.so` was NOT in NEEDED — the `--unresolved-symbols=ignore-all` link flag
+  let the .so build anyway, and the M1 smoke exe tolerated it because `--help`
+  exits before any zlib path AND the exe link differed. **Fix:** added `z` to the
+  `target_link_libraries` system-lib list in `scrcpy-android-CMakeLists.txt`.
+  Re-relink → `libz.so` now in NEEDED (verified `llvm-readelf -d`); bridge symbols
+  still exported (`llvm-nm -D`: **`T Java_net_scrcpy_android_NativeBridge_runScrcpy`,
+  `T JNI_OnLoad`, `T ScrcpyUpdateStatus`, `T scrcpy_main`**); ELF64/DYN/X86-64,
+  NO TEXTREL.
+  **APK REBUILD:** `stage-natives.sh` re-staged the 3 fresh libs →
+  `./gradlew --no-daemon assembleDebug` → BUILD SUCCESSFUL (26.5 MB). VERIFIED
+  the APK's `lib/x86_64/libscrcpy.so` (15279104 B, the relinked one) contains
+  `T Java_net_scrcpy_android_NativeBridge_runScrcpy` + `T JNI_OnLoad`.
+  **RUNTIME SANITY (real ART, on-device):** the redroid-11 x86_64 GUI stack on
+  d-claude is too degraded to launch an Activity (surfaceflinger/sensors/health/
+  wificond/logd HALs SIGABRT at boot → `sys.boot_completed` never flips, no
+  launcher, `am start`/monkey never start the app process) — so instead of the
+  GUI launch I drove the **exact JNI entrypoint through real ART** with
+  `app_process64`: a tiny `NbTest` dex (built with the SDK `d8`, bundling the
+  vendored `org.libsdl.app.*` glue so SDL2's own `JNI_OnLoad` — which registers
+  natives against `org.libsdl.app.SDLActivity` — resolves) `System.load`s the 3
+  libs in order and reflectively calls `net.scrcpy.android.NativeBridge
+  .runScrcpy({"scrcpy","--help"})`. **VERBATIM stdout (688 lines):**
+  ```
+  [nbtest] loaded libc++_shared.so
+  [nbtest] loaded libSDL2.so
+  [nbtest] loaded libscrcpy.so
+  [nbtest] NativeBridge class resolved: class net.scrcpy.android.NativeBridge
+  [nbtest] calling runScrcpy(scrcpy --help) via JNI ...
+  scrcpy 3.3.4 <https://github.com/Genymobile/scrcpy>
+  Usage: scrcpy [options]
+  ... [full scrcpy 3.3.4 usage] ...
+  [nbtest] runScrcpy returned 0
+  Exit status:
+        0  Normal program termination
+        1  Start failure
+        2  Device disconnected while running
+  ```
+  → ART loaded all 3 native libs (NO UnsatisfiedLinkError after the libz fix),
+  bound + invoked `Java_net_scrcpy_android_NativeBridge_runScrcpy`, control
+  entered `scrcpy_main`, the full scrcpy 3.3.4 usage printed, and `runScrcpy
+  returned 0` with `app_process` exit 0 — no crash/SIGSEGV. (The bridge's own
+  `__android_log_print` "scrcpy"-tag lines could NOT be captured because logd is
+  one of the redroid services that SIGABRTs at boot; the usage text reaches us via
+  scrcpy's own `printf`/stdout, which is the authoritative proof the native method
+  ran. Driving the real `MainActivity` Activity awaits a healthy emulator — M2
+  task 4.) Throwaway redroids removed; `mf-e2e-redroid-1` untouched; host clean.
+  **Committed:** android-jni-bridge.c, scrcpy-android-CMakeLists.txt (bridge in
+  source list + `z` link), NativeBridge.kt, MainActivity.kt, STATE. NOT committed:
+  the relinked `.so`/APK (gitignored) or the throwaway nbtest harness (under e2e/,
+  on the build host only).
 - 2026-06-01: **M2 task 1 done — native libs + SDL Java glue integrated into the
   android-app Gradle build; APK packages all 3 .so + compiles `org.libsdl.app.*`.**
   This is BUILD-INTEGRATION ONLY (no `scrcpy_main` call / no UI yet — that's M2

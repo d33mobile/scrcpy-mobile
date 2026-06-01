@@ -136,6 +136,11 @@ add_library(scrcpy SHARED
         ${SCRCPY}/delay_buffer.c
         ${SCRCPY}/mouse_capture.c
 
+        # Android-only: JNI bridge (net.scrcpy.android.NativeBridge). Exports
+        # Java_net_scrcpy_android_NativeBridge_runScrcpy + JNI_OnLoad and a STRONG
+        # ScrcpyUpdateStatus override (overrides the weak default in
+        # scrcpy-porting.c) that logs status to logcat + forwards to Java.
+        ${PORTING}/src/android-jni-bridge.c
         # Android-only: weak stubs for the app/SDL-fork symbols (software path).
         ${PORTING}/src/android-stubs.c
         # Android-only: weak no-op stubs for adb dead-path entry points (mDNS /
@@ -189,8 +194,14 @@ target_link_libraries(scrcpy PRIVATE
         ${DEPS}/libadb-full.a
         -Wl,--end-group
         ${DEPS}/libSDL2.so
-        # Android system libs
-        log android GLESv3 GLESv2 EGL OpenSLES m
+        # Android system libs. NB: libz (z) is REQUIRED — adb's libziparchive
+        # (bundled in libadb-full.a) and FFmpeg reference zlib's uncompress /
+        # inflate* / crc32; bionic provides libz.so, but it must be in NEEDED or
+        # the bionic loader fails at runtime with
+        #   UnsatisfiedLinkError: cannot locate symbol "uncompress".
+        # (The smoke exe tolerated the gap because --help exits before any zlib
+        # path runs; loading the .so into ART/an APK resolves it eagerly.)
+        log android GLESv3 GLESv2 EGL OpenSLES m z
         )
 
 # Allow unresolved weak/app-provided symbols to stay undefined at .so link time
