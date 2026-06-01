@@ -18,9 +18,10 @@ log() { printf '%s [m3-bna] %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 
 mkdir -p "$ARTIFACTS"
 
-log "installing build tools (make/meson/nasm/rsync/socat/pkg-config/golang)"
-apt-get update -qq >/dev/null 2>&1 || true
-apt-get install -y -qq make meson nasm rsync socat pkg-config golang-go >/dev/null 2>&1 || true
+log "asserting baked build tools are present (no runtime apt; see e2e/Dockerfile)"
+for t in make nasm perl go pkg-config patch socat rsync gcc; do
+  command -v "$t" >/dev/null 2>&1 || { log "FAILURE: missing baked build tool $t"; exit 1; }
+done
 
 SDK_CMAKE_DIR="$(ls -d /opt/android-sdk/cmake/*/bin 2>/dev/null | sort -V | tail -1 || true)"
 [ -n "$SDK_CMAKE_DIR" ] && export PATH="$SDK_CMAKE_DIR:$PATH"

@@ -31,7 +31,7 @@ probeA(){ adb -s "$SERIAL_A" shell "/data/local/tmp/m3-tcp-probe $1 $2" 2>&1 || 
 
 main(){
   mkdir -p "$ARTIFACTS"; trap cleanup EXIT
-  command -v socat >/dev/null 2>&1 || { log "apt socat"; apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq socat >/dev/null 2>&1||true; }
+  command -v socat >/dev/null 2>&1 || { log "FATAL: socat missing (baked into scrcpy-e2e:dev; rebuild from e2e/Dockerfile)"; exit 1; }
   adb kill-server >/dev/null 2>&1||true; adb start-server >/dev/null 2>&1||true
   create_avd "$AVD_B"; create_avd "$AVD_A"
   PID_B="$(launch_emu "$AVD_B" "$PORT_B")"; PID_A="$(launch_emu "$AVD_A" "$PORT_A")"

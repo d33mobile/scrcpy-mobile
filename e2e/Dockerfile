@@ -83,4 +83,25 @@ RUN cp ${ANDROID_SDK_ROOT}/emulator/package.xml /tmp/emu-package.xml \
     && rm /tmp/emu.zip /tmp/emu-package.xml \
     && emulator -version | grep -i "version" | head -1
 
+# Native-build toolchain, baked so `bash e2e/run.sh` needs ZERO network apt at
+# runtime (hermetic). This is the UNION of every package the per-run
+# `apt-get install` in the build path used to add:
+#   - run.sh ensure_build_tools : make meson nasm rsync socat pkg-config golang-go
+#   - lib-net.sh / m3-net-diag* : socat
+#   - porting/scripts/make-*-android.sh requirements (documented in their headers):
+#       * ffmpeg   : nasm (x86 asm), pkg-config
+#       * openssl  : perl (already in base image), make
+#       * adb-mobile: make, go (boringssl codegen), a host C/C++ compiler (for the
+#                     host protoc build) -> build-essential, and patch (apply the
+#                     vendored adb patches; make-adb-mobile asserts `command -v patch`)
+#       * scrcpy/sdl/adb cmake+ninja come from the Android-SDK cmake package above,
+#         which the scripts put on PATH; ninja-build is also baked as a safety net.
+# build-essential supplies gcc/g++/make; make/patch are kept explicit for clarity.
+# IMPORTANT: this layer is APPENDED AFTER the expensive SDK/NDK/system-image layers
+# so a rebuild only re-runs this apt layer and does NOT re-download the Android SDK.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential make nasm golang-go ninja-build pkg-config \
+        patch socat rsync meson \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace

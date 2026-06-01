@@ -210,9 +210,16 @@ boot_both() {
 
 # --- Build helpers ---------------------------------------------------------
 ensure_build_tools() {
-  log "installing build tools (make/meson/nasm/rsync/socat/pkg-config/golang)"
-  apt-get update -qq >/dev/null 2>&1 || true
-  apt-get install -y -qq make meson nasm rsync socat pkg-config golang-go >/dev/null 2>&1 || true
+  # Build tools are BAKED into scrcpy-e2e:dev (see e2e/Dockerfile). No runtime apt:
+  # the run is hermetic. Assert the toolchain is present instead of installing it.
+  log "asserting baked build tools are present (no runtime apt)"
+  local missing="" t
+  for t in make nasm perl go pkg-config patch socat rsync gcc; do
+    command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+  done
+  [ -z "$missing" ] || fail "missing baked build tool(s):$missing — rebuild scrcpy-e2e:dev from e2e/Dockerfile"
+  # The Android-SDK cmake (with bundled ninja) is not on PATH by default; add it
+  # so the native scripts find cmake/ninja.
   local sdk_cmake_dir
   sdk_cmake_dir="$(ls -d /opt/android-sdk/cmake/*/bin 2>/dev/null | sort -V | tail -1 || true)"
   [ -n "$sdk_cmake_dir" ] && export PATH="$sdk_cmake_dir:$PATH"

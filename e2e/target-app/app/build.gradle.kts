@@ -6,6 +6,10 @@ plugins {
 android {
     namespace = "net.scrcpy.e2etarget"
     compileSdk = 36
+    // Pin to the build-tools baked into scrcpy-e2e:dev (e2e/Dockerfile). Without
+    // this, AGP 8.7.3 defaults to build-tools 34.0.0 and silently downloads it
+    // from dl.google.com at build time — breaking hermetic / offline runs.
+    buildToolsVersion = "37.0.0"
 
     defaultConfig {
         applicationId = "net.scrcpy.e2etarget"

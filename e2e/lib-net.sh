@@ -30,16 +30,14 @@
 # ============================================================================
 #
 # Functions are idempotent and safe to source repeatedly. They require `socat`
-# on the container host (install with `apt-get install -y socat` if missing).
+# on the container host — it is BAKED into scrcpy-e2e:dev (see e2e/Dockerfile),
+# so there is no runtime apt; this just asserts it is present.
 
 # Default bridge port that A connects to (10.0.2.2:<this>).
 : "${M3_BRIDGE_PORT:=6555}"
 
-# _lib_net_have_socat — ensure socat is installed (best-effort apt).
+# _lib_net_have_socat — assert socat is present (baked into the image; no apt).
 _lib_net_have_socat() {
-  command -v socat >/dev/null 2>&1 && return 0
-  apt-get update -qq >/dev/null 2>&1 || true
-  apt-get install -y -qq socat >/dev/null 2>&1 || true
   command -v socat >/dev/null 2>&1
 }
 

@@ -43,7 +43,7 @@ the image), the README/docs reflect the working state honestly, and a final cold
 run is green; then the goal is declared fully realized.
 
 ### Tasks
-- [ ] Bake the e2e build dependencies into e2e/Dockerfile (make, nasm, perl,
+- [x] Bake the e2e build dependencies into e2e/Dockerfile (make, nasm, perl,
       golang-go, ninja-build, pkg-config, build-essential, patch, socat — everything
       the per-run `apt-get` in the build scripts currently installs) so run.sh needs
       ZERO network apt at runtime; rebuild scrcpy-e2e:dev; do one green
@@ -62,6 +62,72 @@ run is green; then the goal is declared fully realized.
       STATE.md. (When this passes, the loop should stop.)
 
 ### Progress log
+- 2026-06-01: **M4 task 1 DONE — `bash e2e/run.sh` is now HERMETIC: ZERO runtime apt,
+  proven by a fully GREEN `--network none` end-to-end run (exit 0, 5/5 coordinate-faithful
+  taps, Connected, both APKs built offline).**
+  **PACKAGES BAKED into e2e/Dockerfile** (one new RUN layer, the UNION of every per-run
+  `apt-get install` across the build path): `build-essential make nasm golang-go
+  ninja-build pkg-config patch socat rsync meson` (perl is already in the
+  eclipse-temurin base; cmake+ninja for the cross-compile come from the SDK
+  `cmake;3.22.1` package the scripts put on PATH; `ninja-build` baked as a safety net).
+  Where each came from: run.sh `ensure_build_tools` (make meson nasm rsync socat
+  pkg-config golang-go) + lib-net.sh/m3-net-diag* (socat) + the porting scripts'
+  documented host requirements (ffmpeg→nasm+pkg-config; openssl→perl+make;
+  adb-mobile→make+go boringssl codegen+host C/C++ for host protoc→build-essential+patch).
+  **LAYER PLACEMENT preserves the SDK cache:** the new apt layer is APPENDED AFTER the
+  cmdline-tools/sdkmanager/NDK/system-image/emulator layers (just before WORKDIR), so a
+  rebuild only re-runs the cheap apt layer. **Verified:** `docker build` on d-claude =
+  `real 1m25s`, with `#5..#8` (cmdline-tools, sdkmanager SDK+NDK+system-image,
+  apt-base, pinned-emulator) all **CACHED** — no Android-SDK re-download; only the new
+  `#9` apt layer ran (75.7s). Tool-presence check in the rebuilt image:
+  `command -v make nasm perl go ninja pkg-config patch socat gcc` → all under
+  `/usr/bin` (+ g++, meson, rsync). 
+  **SCRIPTS CLEANED — every per-run `apt-get` removed** (grep `apt-get` across
+  e2e/ + porting/scripts/ + android-app/ outside the Dockerfile = 0 hits):
+   • run.sh `ensure_build_tools`: apt-install → assertion `command -v make nasm perl go
+     pkg-config patch socat rsync gcc || fail` (still adds the SDK cmake dir to PATH).
+   • lib-net.sh `_lib_net_have_socat`: apt → presence check only.
+   • m3-build-and-{connect,automate}.sh: apt → tool-presence assert.
+   • m3-net-diag.sh / m3-net-diag2.sh: socat apt → fatal-if-missing assert.
+  **EXTRA HERMETICITY GAP FOUND + FIXED (not apt, but a hidden per-run network fetch):**
+  the first `--network none` run got the ENTIRE native stack to compile offline
+  (ffmpeg release/6.0 + sdl + openssl + adb-mobile + scrcpy, fresh libscrcpy.so
+  14,111,800 B) then FAILED at the Gradle APK build with `Failed to find Build Tools
+  revision 34.0.0` + `UnknownHostException: dl.google.com` — AGP 8.7.3 DEFAULTS to
+  build-tools 34.0.0 and was silently downloading it at build time on every prior
+  (networked) run. Fixed by pinning `buildToolsVersion = "37.0.0"` (the baked version)
+  in BOTH android-app/app/build.gradle.kts and e2e/target-app/app/build.gradle.kts.
+  (AndroidX artifacts were already in the warm gradle-cache volume, so no other Maven
+  fetch is needed offline.)
+  **HERMETIC GREEN RUN (authoritative; d-claude, scrcpy-e2e:dev, `docker run
+  --network none --device /dev/kvm`, 2×mem=1536, gradle-cache volume mounted, warm
+  native lib): exit 0, ~4m40s (13:36:51→13:41:30).** Native build skipped (lib present);
+  both APKs built offline (`BUILD SUCCESSFUL in 22s` + `in 27s`); stream
+  `INFO: Connected to 10.0.2.2:6555`, scrcpy-server `net.scrcpy.e2etarget` running on B.
+  Verbatim per-tap evidence:
+  ```
+  Derived A->B transform (scaled x1000): SX=1000 OX=-1000 SY=1109 OY=-70784
+  p1 [calibration] (324,576)  -> expect (323,568)  got (323,568)  dx=0 dy=0 PASS
+  p2 [calibration] (756,1344) -> expect (755,1420) got (755,1420) dx=0 dy=0 PASS
+  p3 [validation]  (540,960)  -> expect (539,994)  got (540,994)  dx=1 dy=0 PASS
+  p4 [validation]  (756,576)  -> expect (755,568)  got (755,568)  dx=0 dy=0 PASS
+  p5 [validation]  (324,1344) -> expect (323,1420) got (323,1420) dx=0 dy=0 PASS
+  B final tap count = 5 (sent 5)
+  ```
+  **HOW NO-RUNTIME-APT WAS PROVEN (two independent ways):** (1) `--network none` on the
+  inner container — if any `apt-get`/Maven/SDK fetch were still in the build path it
+  would `UnknownHostException` and fail; it exited 0. (2) grep of the full run log:
+  `apt-get`=0, `^Get:`=0, `dl.google.com`=0, `UnknownHostException`=0, `Failed to
+  connect`=0. The assertion line `asserting baked build tools are present (no runtime
+  apt)` fired and passed. Combined with hermetic run #1 (which compiled the whole native
+  stack offline before the build-tools fix), BOTH halves — native cross-compile AND the
+  two Gradle APK builds — are proven to run with no network. **SELF-CLEAN verified:** 0
+  stray scrcpy-e2e containers (`--rm`), 0 qemu-system, 0 socat-6555; mf-e2e-* / redroid /
+  ws-scrcpy untouched; host clean. **Committed:** e2e/Dockerfile (baked apt layer),
+  e2e/run.sh + e2e/lib-net.sh + e2e/m3-build-and-{connect,automate}.sh +
+  e2e/m3-net-diag{,2}.sh (apt→assert), android-app/app/build.gradle.kts +
+  e2e/target-app/app/build.gradle.kts (buildToolsVersion pin), STATE.md. NOT committed:
+  any .so/.apk/jniLibs/assets/artifacts (gitignored). NEXT: M4 task 2 (docs).
 - 2026-06-01: **M3 AUDIT PASSED — THE GOAL GATE IS GREEN. Skeptical audit re-ran the
   e2e on d-claude with commands (trusting no prose); advancing to M4.**
   **Critical read of the assertion (`e2e/run.sh` inner_full + `lib-automation.sh`):**
