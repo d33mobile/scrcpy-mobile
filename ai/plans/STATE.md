@@ -29,7 +29,7 @@ run inside `scrcpy-e2e:dev`. The iOS build must remain intact (do not break it).
 Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
 
 ### Tasks
-- [ ] Add an Android NDK cross-compile path to `porting/` **without breaking the
+- [x] Add an Android NDK cross-compile path to `porting/` **without breaking the
       iOS build**: new scripts/targets (parallel to the iOS ones) that emit into
       `output/android/x86_64/`. Drive arch/SDK selection so iOS Makefile targets are
       untouched. Pin NDK 27.2.12479018 (matches `scrcpy-e2e:dev`).
@@ -49,6 +49,28 @@ Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
       `scrcpy-e2e:dev` on d-claude and capture output. Commit + push when green.
 
 ### Progress log
+- 2026-06-01: **M1 task 1 done — Android NDK build scaffold (scaffolding only).**
+  Added `porting/scripts/android-defines.sh` (NDK locate honoring
+  `$ANDROID_NDK_ROOT` / `$ANDROID_SDK_ROOT/ndk/27.2.12479018` / `$ANDROID_HOME`,
+  **NDK pinned 27.2.12479018**, **TARGET_ABI=x86_64** default, **ANDROID_API=26**,
+  unified-llvm toolchain paths, output `output/android/$TARGET_ABI/`),
+  `porting/Makefile.android` (stub targets `android-ffmpeg/libsdl/openssl/adb-mobile/
+  scrcpy` each echoing `TODO(M1)` + creating output dir, plus `android-libs` and a
+  real `android-toolchain-check`; `SHELL := /bin/bash` for the bashy defines),
+  `porting/scripts/README-android.md`. Wired into `porting/Makefile` purely
+  additively (`SOURCE_ROOT := ...` + `include Makefile.android` appended after
+  `server-diff`; nothing references the iOS `all` target). **iOS build UNCHANGED:**
+  `make -n all` recipe output is byte-for-byte identical before/after (diff clean);
+  no iOS script touched. **VERIFIED in `scrcpy-e2e:dev` on d-claude:** sourcing
+  android-defines.sh resolves CC=`x86_64-linux-android26-clang`; it compiles+links a
+  trivial C file into an Android x86_64 ELF — `llvm-readelf` shows `ELF64` /
+  `X86-64` / PIE with a `.note.android.ident` (`r27c`, NDK build 12479018);
+  `make android-toolchain-check` prints `[android] TOOLCHAIN_OK`; `make android-libs`
+  runs all 5 stubs and creates `output/android/x86_64/`. ABI switch sanity-checked:
+  `TARGET_ABI=arm64-v8a` resolves `aarch64-linux-android26-clang` (binary present).
+  (Note: `scrcpy-e2e:dev` lacks `make`/`file`; installed transiently in the throwaway
+  verify container — the toolchain-check recipe falls back to `llvm-readelf` when
+  `file` is absent.)
 - 2026-06-01: **M0 AUDIT PASSED.** Fresh authoritative run on d-claude (after
   killing two overlapping/racing harness containers that were starving RAM —
   single clean run only): `AUDIT_RC=0`, SUCCESS banner, both `emulator-5554` and

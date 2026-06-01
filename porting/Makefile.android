@@ -1,0 +1,66 @@
+# Android NDK build targets — included by porting/Makefile behind a guard.
+#
+# SCAFFOLDING ONLY. These targets currently establish the NDK toolchain plumbing
+# and emit into output/android/$(TARGET_ABI)/. The per-lib bodies are STUBS that
+# later M1 tasks fill in (FFmpeg, SDL2, OpenSSL, adb-mobile, libscrcpy).
+#
+# The iOS build path (`make -C porting` / `make libs`) is completely independent:
+# nothing here is wired into the default `all` target.
+#
+# Usage:
+#   make -C porting android-libs                 # run all android stub targets
+#   make -C porting android-ffmpeg               # one target
+#   make -C porting android-toolchain-check      # prove the NDK toolchain resolves
+#   TARGET_ABI=arm64-v8a make -C porting android-libs
+#
+# Knobs (env, forwarded to scripts/android-defines.sh):
+#   TARGET_ABI   (default x86_64), ANDROID_API (default 26),
+#   ANDROID_NDK_ROOT / ANDROID_SDK_ROOT / ANDROID_HOME.
+
+# android-defines.sh uses bash features ([[ ]], BASH_SOURCE). Run recipes under
+# bash. The iOS recipes above already prefix `bash` explicitly and are POSIX-sh
+# compatible, so forcing bash here does not change their behaviour.
+SHELL := /bin/bash
+
+TARGET_ABI ?= x86_64
+ANDROID_API ?= 26
+ANDROID_OUTPUT_DIR := $(SOURCE_ROOT)/output/android/$(TARGET_ABI)
+
+.PHONY: android-libs android-ffmpeg android-libsdl android-openssl \
+	android-adb-mobile android-scrcpy android-toolchain-check android-mkdir-output
+
+android-libs: android-ffmpeg android-libsdl android-openssl android-adb-mobile android-scrcpy
+	@echo "[android] all stub targets done (ABI=$(TARGET_ABI), API=$(ANDROID_API))."
+
+android-mkdir-output:
+	@mkdir -pv "$(ANDROID_OUTPUT_DIR)"
+
+# Resolve and exercise the NDK toolchain (compile+link a trivial Android binary).
+android-toolchain-check: android-mkdir-output
+	@. scripts/android-defines.sh && \
+		printf 'int main(void){return 0;}\n' > "$(ANDROID_OUTPUT_DIR)/.toolchain-probe.c" && \
+		"$$ANDROID_CC" "$(ANDROID_OUTPUT_DIR)/.toolchain-probe.c" -o "$(ANDROID_OUTPUT_DIR)/.toolchain-probe" && \
+		{ command -v file >/dev/null 2>&1 && file "$(ANDROID_OUTPUT_DIR)/.toolchain-probe" || \
+		  "$$ANDROID_TOOLCHAIN/bin/llvm-readelf" -h "$(ANDROID_OUTPUT_DIR)/.toolchain-probe" | grep -E 'Class|Machine|Type'; } && \
+		rm -f "$(ANDROID_OUTPUT_DIR)/.toolchain-probe" "$(ANDROID_OUTPUT_DIR)/.toolchain-probe.c" && \
+		echo "[android] TOOLCHAIN_OK"
+
+android-ffmpeg: android-mkdir-output
+	@. scripts/android-defines.sh >/dev/null && \
+		echo "TODO(M1): cross-compile FFmpeg for android $(TARGET_ABI) -> $(ANDROID_OUTPUT_DIR)"
+
+android-libsdl: android-mkdir-output
+	@. scripts/android-defines.sh >/dev/null && \
+		echo "TODO(M1): cross-compile SDL2 (Android backend) for android $(TARGET_ABI) -> $(ANDROID_OUTPUT_DIR)"
+
+android-openssl: android-mkdir-output
+	@. scripts/android-defines.sh >/dev/null && \
+		echo "TODO(M1): provide OpenSSL for android $(TARGET_ABI) -> $(ANDROID_OUTPUT_DIR)"
+
+android-adb-mobile: android-mkdir-output
+	@. scripts/android-defines.sh >/dev/null && \
+		echo "TODO(M1): build adb-mobile for android $(TARGET_ABI) -> $(ANDROID_OUTPUT_DIR)"
+
+android-scrcpy: android-mkdir-output
+	@. scripts/android-defines.sh >/dev/null && \
+		echo "TODO(M1): build libscrcpy.so for android $(TARGET_ABI) -> $(ANDROID_OUTPUT_DIR)"

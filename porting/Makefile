@@ -65,3 +65,9 @@ tsnet-forwarder:
 
 server-diff:
 	bash ./scripts/server-diff.sh
+
+# --- Android NDK build (additive; does not affect the iOS targets above) ---------
+# All Android logic lives in Makefile.android and the scripts/android-*.sh drivers.
+# Nothing here is referenced by the iOS `all` target, so the iOS build is unchanged.
+SOURCE_ROOT := $(abspath $(CURDIR)/..)
+include Makefile.android
