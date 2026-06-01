@@ -65,4 +65,22 @@ RUN yes | sdkmanager --licenses >/dev/null \
         "emulator" \
         "system-images;android-30;google_apis;x86_64"
 
+# Pin the EMULATOR binary to build 11237101 (v33.1.24), overlaying the one
+# sdkmanager installs (currently v36.5.11). The current emulator SEGFAULTS under
+# KVM-in-Docker on this host: every launch (any -gpu / -cpu / -feature combo)
+# stalls all vCPU threads ("detected a hanging thread 'QEMU2 CPU0 thread'. No
+# response for ~19000 ms") right after "Starting QEMU main loop" and then
+# core-dumps at ~40s, so the AVD never boots. v33.1.24 boots API 30 cleanly
+# (~73s to sys.boot_completed) in the same container. We keep the sdkmanager
+# `emulator` install above so its package.xml + shared libs land, then replace
+# only the binaries with the pinned build (restoring package.xml so avdmanager
+# still recognises the package). Empirically verified on d-claude 2026-06-01.
+RUN cp ${ANDROID_SDK_ROOT}/emulator/package.xml /tmp/emu-package.xml \
+    && wget -q https://dl.google.com/android/repository/emulator-linux_x64-11237101.zip -O /tmp/emu.zip \
+    && rm -rf ${ANDROID_SDK_ROOT}/emulator \
+    && unzip -q /tmp/emu.zip -d ${ANDROID_SDK_ROOT} \
+    && cp /tmp/emu-package.xml ${ANDROID_SDK_ROOT}/emulator/package.xml \
+    && rm /tmp/emu.zip /tmp/emu-package.xml \
+    && emulator -version | grep -i "version" | head -1
+
 WORKDIR /workspace

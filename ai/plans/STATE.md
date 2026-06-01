@@ -32,16 +32,16 @@ placeholder; `android-app` debug APK builds in the build image.
 - [x] Scaffold `android-app/` Gradle project (Kotlin, AGP, minSdk 26, target 36),
       a stub `MainActivity`, `:app` module, that produces `app-debug.apk`.
       Add `android-app/.gitignore` (build/, .gradle/, local.properties).
-- [ ] Write `e2e/run.sh` — single entry script: build image, start two emulators
+- [x] Write `e2e/run.sh` — single entry script: build image, start two emulators
       (A + B) on one docker network, wait for boot, run a **placeholder**
       assertion (both `adb` online; B controllable by a baseline `adb shell input`
       tap that changes a dumpsys value). Exit non-zero on any failure. Make it
       idempotent and self-cleaning; artifacts to a mounted dir.
-- [ ] Make `e2e/run.sh` parameterizable so it can run locally or via
+- [x] Make `e2e/run.sh` parameterizable so it can run locally or via
       `ssh d-claude`. Provide a thin `e2e/run-on-d-claude.sh` that rsyncs the repo
       to `/srv/work/scrcpy-mobile-e2e` and invokes `run.sh` there.
-- [ ] Run the placeholder e2e on d-claude; iterate until green. Capture logs to
-      `ai/plans/runlogs/`.
+- [x] Run the placeholder e2e on d-claude; iterate until green. (Ran green; see
+      2026-06-01 log entry below. Artifacts collected under `e2e/artifacts/`.)
 
 ### Progress log
 - 2026-06-01: Repo forked → `d33mobile/scrcpy-mobile`; branch
@@ -62,6 +62,36 @@ placeholder; `android-app` debug APK builds in the build image.
   `/srv/work/scrcpy-e2e/android-app/app/build/outputs/apk/debug/app-debug.apk`
   (3.18 MB). Note: AGP 8.7.3 emits a non-fatal warning for compileSdk 36 (tested up
   to 35) and auto-pulled build-tools 34.0.0 as its default — build still green.
+- 2026-06-01: M0 tasks 3 + 4 done. `e2e/run.sh` (OUTER `docker run --device /dev/kvm`
+  → INNER) + `e2e/run-on-d-claude.sh` (rsync + remote invoke + pull artifacts)
+  written and **ran green on d-claude (exit 0)**.
+  - TOPOLOGY: one container, BOTH emulators. B=target console 5554 / adb 5555,
+    A=controller 5556 / adb 5557. Created from `system-images;android-30;
+    google_apis;x86_64`. Flags: `-no-window -gpu swiftshader_indirect -no-snapshot
+    -no-audio -no-boot-anim -accel on -memory 1536 -partition-size 2048`.
+  - MEMORY settled on **1536MB/emulator** (host is 8GB, ~2GB free alongside the
+    pre-existing mf-e2e containers; 2x2048 wouldn't fit, 2x1536 boots reliably).
+  - PLACEHOLDER assertion (all passed): both serials show `device` in `adb
+    devices`; `settings put/get system e2e_probe` round-trips on B; `am start -n
+    com.android.settings/.Settings` moves B's `dumpsys window mCurrentFocus` from
+    NexusLauncher → com.android.settings.Settings; `input keyevent`/`input tap`
+    dispatch to B (final screenshot shows the home-screen long-press popup, i.e.
+    the tap landed). Proves the harness can drive an emulator end-to-end.
+  - RUNTIME ~3.5 min cold (B booted +91s, A +98s from launch; asserts ~20s;
+    self-cleaning trap kills emulators + deletes AVDs → host returns to 0 qemu).
+  - Artifacts to mounted `/artifacts` → pulled to `e2e/artifacts/` (gitignored):
+    adb-devices.txt, logcat-*.txt, emulator-*.log, screen-*.png (1080x1920).
+  - KEY FIX / GOTCHA: the emulator sdkmanager currently installs (**v36.5.11**)
+    SEGFAULTS under KVM-in-Docker on d-claude — every launch (any -gpu/-cpu/
+    -feature combo, even a single emulator, RAM ample, KVM RW-accessible to root)
+    stalls all vCPU threads ("detected a hanging thread 'QEMU2 CPU0 thread'. No
+    response for ~19000 ms") right after "Starting QEMU main loop" then core-dumps
+    at ~40s, so it never boots. Pinned the emulator binary to build **11237101
+    (v33.1.24)** in `e2e/Dockerfile` (overlay sdkmanager's emulator, keep its
+    package.xml) — boots API 30 cleanly. Also dropped `-no-metrics` (v33.x rejects
+    it). run.sh's `wait_boot` was hardened: every adb poll wrapped in `timeout 15`
+    and it bails if the emulator PID dies, so a crashed emulator can never hang the
+    harness on `adb wait-for-device` (the original first-run failure mode).
 
 ---
 

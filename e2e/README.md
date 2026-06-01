@@ -18,6 +18,7 @@ the Android-controls-Android e2e harness. It does two jobs:
 | build-tools     | `37.0.0`                         | Matches the sibling build image. |
 | NDK             | `27.2.12479018` (r27c)           | Recent stable LTS NDK for the `porting/` cross-compile (M1). |
 | CMake           | `3.22.1`                         | NDK-bundled CMake. |
+| Emulator binary | build `11237101` (v33.1.24)      | Pinned, overlaying sdkmanager's current emulator. The current build (v36.5.11) segfaults under KVM-in-Docker on d-claude ("detected a hanging thread 'QEMU2 CPU0 thread'… No response for ~19000 ms" → core dump before boot); v33.1.24 boots API 30 cleanly. |
 | Emulator image  | `system-images;android-30;google_apis;x86_64` | API 30, Google APIs, x86_64 — known-good reliable headless boot under KVM. |
 
 ## Requirements
