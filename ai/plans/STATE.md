@@ -18,7 +18,7 @@ host = `d-claude` (ssh). Build/run scratch on d-claude under `/srv/work`.
 
 ---
 
-## Current milestone: **M3 — Full GUI-automation two-emulator e2e (THE GOAL GATE)**
+## Current milestone: **M4 — Reproducibility, hardening & final review**
 
 (M0 — Scaffolding & red-but-running pipeline — **PASSED audit 2026-06-01**.
 M1 — Native stack cross-compiled for Android x86_64 — **PASSED audit 2026-06-01**;
@@ -27,63 +27,96 @@ cleanly on the bionic linker.
 M2 — Android client app wraps the native lib — **PASSED audit 2026-06-01**; clean
 rebuild links + exports `T scrcpy_android_main` + `T scrcpy_main`, the APK bundles
 all three .so + the SDL glue, and a fresh-emulator launch enters scrcpy_main and
-runs the native client with zero crashes. See progress log.)
+runs the native client with zero crashes.
+M3 — Full GUI-automation two-emulator e2e (THE GOAL GATE) — **PASSED audit
+2026-06-01**; skeptical audit re-ran `bash e2e/run.sh` on d-claude COLD (full native
+rebuild) + WARM, both exit 0 with the SUCCESS banner, `INFO: Connected to
+10.0.2.2:6555`, scrcpy-server on B, and 5/5 coordinate-faithful taps (3 independent
+validation taps fit the calibration-derived transform, max 1px). The taps are
+injected on A (emulator-5556) and asserted on B (emulator-5554) — not cheating; a
+broken connection / lost tap / wrong mapping FAILS the script. iOS intact, no
+submodule bumps, M3 commits pushed to fork, no binary artifacts tracked. See progress
+log.)
 
-Accept: `bash e2e/run.sh` on d-claude (one script) boots TWO emulators (B=target,
-A=controller running our APK), A's app connects to B over ADB-over-TCP and renders
-B's screen, then UI automation on A taps the rendered remote view and the test
-asserts B reacted to that exact input; reliably green across repeated runs incl. a
-cold run.
+Accept: `bash e2e/run.sh` is hermetic (no per-run network apt — build deps baked into
+the image), the README/docs reflect the working state honestly, and a final cold audit
+run is green; then the goal is declared fully realized.
 
 ### Tasks
-- [x] Solve A→B reachability in the harness: boot both emulators; expose B's
-      adb-over-tcp (`adb tcpip 5555` on B) at an address emulator A's in-process adb
-      can reach (e.g. forward B:5555 to the container host, A connects via
-      10.0.2.2:PORT). Verify from inside A that the target is reachable. Document the
-      address scheme. **DONE 2026-06-01 — A reaches B's adbd at `10.0.2.2:6555` via a
-      host-side socat `0.0.0.0:6555 -> 127.0.0.1:5555` bridge; verified by adbd CNXN
-      banner received inside A. See progress log + `e2e/lib-net.sh`.**
-- [x] Put a DETERMINISTIC input target on B (a known app/activity or widget whose
-      state is checkable via dumpsys/uiautomator), so a tap at a known coordinate
-      produces an unambiguous, assertable state change on B. **DONE 2026-06-01 —
-      purpose-built `net.scrcpy.e2etarget/.TargetActivity` records every tap on 3
-      channels (uiautomator text, logcat, run-as file); tap at (X,Y) -> recorded
-      X,Y in device pixels with dx=dy=0. See progress log + `e2e/target-app/`,
-      `e2e/lib-target.sh`.**
-- [x] Drive A: launch MainActivity → enter B's reachable host:port → Connect →
-      ScrcpyActivity; confirm via A's logcat the session reaches Connected
-      (ScrcpyUpdateStatus Connected) and scrcpy-server is running on B (pidof /
-      dumpsys on B). **DONE 2026-06-01 — A's in-app scrcpy connects to B at
-      `10.0.2.2:6555`, PUSHES + LAUNCHES scrcpy-server on B, reaches Connected,
-      and renders B's screen. 2/2 runs green. See progress log +
-      `e2e/m3-connect.sh`, `e2e/m3-build-and-connect.sh`.**
-- [x] Full GUI automation: with uiautomator/adb `input` ON EMULATOR A, tap a known
-      coordinate over the rendered remote-view surface; map it to the expected
-      coordinate on B; assert via B (uiautomator/dumpsys/screencap) that B received
-      that exact input. Handle the coordinate scaling (A's surface → B's resolution).
-      **DONE 2026-06-01 — 5 taps injected on A's remote-view surface; ALL received by
-      B at the expected coordinate (4/5 with dx=dy=0, worst dx=1px); count 5/5. The
-      A→B transform (X 1:1; Y scale 1.109 + offset −70.8px from A's status bar /
-      letterboxing) was derived empirically from 2 calibration taps and the 3
-      validation taps fit it. See progress log + `e2e/lib-automation.sh`,
-      `e2e/m3-automation.sh`, `e2e/m3-build-and-automate.sh`.**
-- [x] Wire this as the REAL e2e in e2e/run.sh (replace the M0 placeholder
-      assertion): two emulators, connect, automate, assert; idempotent,
-      self-cleaning, artifacts (logcat A+B, screenshots) to mounted dir, correct exit
-      codes. **DONE 2026-06-01 — the proven m3-build-and-automate + m3-automation
-      logic is folded INTO e2e/run.sh (sourcing lib-net/lib-target/lib-automation);
-      one `bash e2e/run-on-d-claude.sh` runs the full GOAL chain and exited 0 with
-      every tap on A received by B at the expected coordinate (5/5, max 1px). The M0
-      placeholder is kept as a `--smoke` sub-mode. See progress log.**
-- [x] Make it reliably green: run `bash e2e/run.sh` via run-on-d-claude.sh ≥3 times
-      incl. one cold run; 100% pass. Capture evidence. **DONE 2026-06-01 — 4/4 runs
-      exit 0 (3 warm + 1 cold), every tap on A received by B at the expected
-      coordinate (5/5 each, max 1px error), B count==sent each run. Host self-cleaned
-      between every run (no stray scrcpy-e2e/qemu/socat/AVD; mf-e2e/redroid/ws-scrcpy
-      untouched). No flakes, no fixes needed. See progress log run-by-run table.
-      M3 ACCEPT CRITERIA MET.**
+- [ ] Bake the e2e build dependencies into e2e/Dockerfile (make, nasm, perl,
+      golang-go, ninja-build, pkg-config, build-essential, patch, socat — everything
+      the per-run `apt-get` in the build scripts currently installs) so run.sh needs
+      ZERO network apt at runtime; rebuild scrcpy-e2e:dev; do one green
+      `bash e2e/run.sh` with the per-run apt-gets removed/asserted-absent.
+- [ ] Update README.md + the status table + ai/plans to reflect reality: the Android
+      client connects to and controls another Android device, proven by
+      `bash e2e/run.sh` (two emulators, coordinate-faithful taps); document the
+      one-command build+run; keep WIP framing honest (x86_64 emulator-proven, software
+      decode, minimal UI, arm64/real-device untested).
+- [ ] (STRETCH, non-blocking for the goal) Cross-compile the native stack +
+      libscrcpy.so for arm64-v8a (real-device ABI) and prove it builds + a bionic
+      smoke; document it as not-yet-tested-on-device. If it proves time-consuming,
+      note it as future work — it does NOT block declaring the locked goal done.
+- [ ] FINAL goal audit: clear caches, run `bash e2e/run.sh` cold once more green;
+      confirm hermeticity + docs; then declare the locked goal FULLY REALIZED in
+      STATE.md. (When this passes, the loop should stop.)
 
 ### Progress log
+- 2026-06-01: **M3 AUDIT PASSED — THE GOAL GATE IS GREEN. Skeptical audit re-ran the
+  e2e on d-claude with commands (trusting no prose); advancing to M4.**
+  **Critical read of the assertion (`e2e/run.sh` inner_full + `lib-automation.sh`):**
+  the PASS condition is REAL and not gameable. (a) Connected gate: the script `fail()`s
+  unless scrcpy's OWN `INFO: Connected to <host:port>` appears in A's in-process client
+  stdio AND a scrcpy-server `app_process` is running on B — both required. (b) Taps are
+  injected ON A: `auto_tap_on_a "$SERIAL_A" ...` = `adb -s emulator-5556 shell input tap`
+  (the controller), landing on A's SDL surface that renders B; NOT a direct tap on B.
+  (c) State is read FROM B: `auto_read_b "$SERIAL_B"` = `adb -s emulator-5554 run-as
+  net.scrcpy.e2etarget cat files/e2e_state.txt`. The assertion derives the A→B affine
+  transform from 2 calibration taps, then requires (i) B's total tap count == taps sent
+  (lost/duplicated taps -> fail), (ii) every tap (incl. 3 INDEPENDENT validation points)
+  maps to B within max(25px, 3%) tolerance, AND (iii) each tap actually incremented B's
+  counter or BX=NA -> `fail "control path broken"`. A no-connection, lost taps, or wrong
+  mapping each trips a distinct `fail()` -> non-zero exit. Confirmed exit-code logic:
+  `exit 0` only after all four gates pass.
+  **COLD run (authoritative; gradle volume removed+recreated, output/android +
+  porting/build + porting/libs + staged jniLibs/assets + APK build dirs wiped;
+  FORCE_NATIVE_REBUILD=1; `bash e2e/run.sh` on d-claude, scrcpy-e2e:dev, --device
+  /dev/kvm, 2x mem=1536): exit 0, runtime ~16m56s (15:01:34->15:18:30 host clock).**
+  Cold native rebuild confirmed: `[ffmpeg-android] cloning FFmpeg release/6.0 ...`
+  re-fetched + all deps rebuilt from scratch, fresh `libscrcpy.so` (14,111,464 B @
+  13:10). Stream: `INFO: Connected to 10.0.2.2:6555`; B server: `net.scrcpy.e2etarget`
+  app_process running. Verbatim banner + per-tap table:
+  ```
+  15:18:30 [run.sh] ==================== SUCCESS (e2e green) ====================
+  COLD_RUN_EXIT=0
+  Derived A->B transform (scaled x1000): SX=1000 OX=-1000 SY=1109 OY=-70784
+  p1 [calibration] (324,576)  -> expect (323,568)  got (323,568)  dx=0 dy=0 PASS
+  p2 [calibration] (756,1344) -> expect (755,1420) got (755,1420) dx=0 dy=0 PASS
+  p3 [validation]  (540,960)  -> expect (539,994)  got (540,994)  dx=1 dy=0 PASS
+  p4 [validation]  (756,576)  -> expect (755,568)  got (755,568)  dx=0 dy=0 PASS
+  p5 [validation]  (324,1344) -> expect (323,1420) got (323,1420) dx=0 dy=0 PASS
+  B final tap count = 5 (sent 5)
+  ```
+  **WARM run (independent corroboration; native lib present -> `skipping native
+  build`; `bash e2e/run.sh`): exit 0, runtime ~6m (15:19:10->15:25:08).** Identical
+  evidence — same transform `SX=1000 OX=-1000 SY=1109 OY=-70784`, same 5/5 PASS table
+  (max 1px), `WARM_RUN_EXIT=0`, SUCCESS banner. Both APKs (app-debug 25,479,733 B;
+  target 816,473 B) built green from the cleared gradle cache.
+  **Self-clean verified after BOTH runs:** 0 scrcpy-e2e containers (`--rm`), 0
+  qemu-system, 0 socat-6555, 0 e2e_ AVDs; the unrelated mf-e2e-appium-runner /
+  mf-e2e-webdav / mf-e2e-redroid / ws-scrcpy containers were never touched. 364G free
+  on /srv/work. RAM rule honoured (sequential, one run at a time).
+  **iOS intact:** `git diff dc09bb9..HEAD -- .gitmodules` empty; NO `Subproject commit`
+  changes in the whole M3 range (scrcpy @ fb6381f v3.3.4, adb-mobile @ 78c32c2
+  unchanged). `porting/src/android-jni-bridge.c` fully `#if defined(__ANDROID__)`
+  -guarded and NOT referenced in `porting/cmake/` (iOS build). The only shared-file
+  edit, `scrcpy-porting.c`, adds a log macro that compiles to `((void)0)` off Android.
+  **git:** local HEAD == fork/android-controls-android = d265c72 (M3 commits pushed);
+  tree clean; no `.so`/`.a`/`.apk`/`.dex`/`.o` tracked; no jniLibs/staged-assets tracked
+  under android-app; scrcpy-server only in its vendored `scrcpy-app/ADBClient/` path.
+  **VERDICT: PASS — the locked goal (our Android app on emulator A controls emulator B,
+  coordinate-faithfully, proven by one reliably-green Dockerized e2e) is demonstrated.
+  -> advancing Current milestone to M4.**
 - 2026-06-01: **M3 task 6 DONE — e2e is RELIABLY GREEN: 4 consecutive runs (3 warm
   + 1 cold), 100% pass, every tap on A received by B at the expected coordinate.
   Zero flakes; no code/script fix was required.**
