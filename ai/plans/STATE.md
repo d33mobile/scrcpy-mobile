@@ -43,9 +43,13 @@ cold run.
       address scheme. **DONE 2026-06-01 — A reaches B's adbd at `10.0.2.2:6555` via a
       host-side socat `0.0.0.0:6555 -> 127.0.0.1:5555` bridge; verified by adbd CNXN
       banner received inside A. See progress log + `e2e/lib-net.sh`.**
-- [ ] Put a DETERMINISTIC input target on B (a known app/activity or widget whose
+- [x] Put a DETERMINISTIC input target on B (a known app/activity or widget whose
       state is checkable via dumpsys/uiautomator), so a tap at a known coordinate
-      produces an unambiguous, assertable state change on B.
+      produces an unambiguous, assertable state change on B. **DONE 2026-06-01 —
+      purpose-built `net.scrcpy.e2etarget/.TargetActivity` records every tap on 3
+      channels (uiautomator text, logcat, run-as file); tap at (X,Y) -> recorded
+      X,Y in device pixels with dx=dy=0. See progress log + `e2e/target-app/`,
+      `e2e/lib-target.sh`.**
 - [ ] Drive A: launch MainActivity → enter B's reachable host:port → Connect →
       ScrcpyActivity; confirm via A's logcat the session reaches Connected
       (ScrcpyUpdateStatus Connected) and scrcpy-server is running on B (pidof /
@@ -62,6 +66,72 @@ cold run.
       incl. one cold run; 100% pass. Capture evidence.
 
 ### Progress log
+- 2026-06-01: **M3 task 2 DONE — deterministic input target app built, installed,
+  launched, and PROVEN on all three state channels; recorded tap coords match the
+  `input tap` coords exactly (dx=dy=0).**
+  **App:** new minimal standalone Gradle project `e2e/target-app/` (mirrors
+  android-app's toolchain: AGP 8.7.3 / Gradle 8.9 / Kotlin 2.0.21, compileSdk=36,
+  minSdk=26; NO AndroidX so uiautomator dumps are clean). Package/applicationId
+  **`net.scrcpy.e2etarget`**, single exported LAUNCHER Activity
+  **`net.scrcpy.e2etarget.TargetActivity`** (full-screen
+  `Theme.Black.NoTitleBar.Fullscreen`, `screenOrientation=sensor`,
+  `FLAG_KEEP_SCREEN_ON`, system bars hidden). A full-screen `TextView` is the
+  content view; the Activity overrides **`dispatchTouchEvent`** (NOT
+  `onTouchEvent`) so it records EVERY `ACTION_DOWN` before any view can consume it
+  — `taps` increments (reset to 0 on launch/onCreate), `lastX,lastY` =
+  `Math.round(rawX/rawY)` in DEVICE PIXELS (view is full-screen ⇒ raw coord ==
+  `input tap` coord within rounding).
+  **THREE state channels (all verified):**
+   1. ON-SCREEN/uiautomator — TextView text AND content-desc = `taps=N last=X,Y`.
+   2. LOGCAT — `Log.i("E2E_TARGET","tap #N at X,Y")`, one line per tap.
+   3. FILE — latest `N X Y` written to the app's INTERNAL `filesDir/e2e_state.txt`
+      (internal, NOT external: API 30+ shell can't `cat` an app's external files
+      dir — got `Permission denied` — and `run-as cat files/...` reads the INTERNAL
+      dir, so external would never be found; internal + run-as is the robust combo).
+  **TWO bugs found+fixed during verification** (caught by the BLOCKING self-test,
+  not assumed): (a) first cut set the TextView `isClickable=true` + used the
+  Activity's `onTouchEvent` — a clickable full-screen view CONSUMES ACTION_DOWN in
+  View.onTouchEvent, so the Activity's onTouchEvent never fired and `taps` stayed
+  0; fixed by making the view non-clickable and capturing in `dispatchTouchEvent`.
+  (b) first cut wrote to `getExternalFilesDir(null)` but read via `run-as cat
+  files/...` (internal dir) → file channel always empty; fixed by writing to the
+  internal `filesDir`.
+  **VERIFICATION (BLOCKING, d-claude, `scrcpy-e2e:dev`, `--device /dev/kvm`, ONE
+  emulator mem=1536, AVD android-30 google_apis x86_64 — reused run.sh boot
+  logic):** `e2e/m3-target-selftest.sh` built the APK (`./gradlew --no-daemon
+  assembleDebug` → app-debug.apk 816,473 B), booted the emulator, `adb install
+  -r -g`'d + launched the Activity (confirmed `mCurrentFocus=Window{... 
+  net.scrcpy.e2etarget/net.scrcpy.e2etarget.TargetActivity}`), tapped (200,400)
+  then (540,1000), and asserted all 3 channels per tap. **VERBATIM evidence
+  (e2e/artifacts/m3-target-evidence.txt) after both taps:**
+  ```
+  === mCurrentFocus ===
+    mCurrentFocus=Window{51664d1 u0 net.scrcpy.e2etarget/net.scrcpy.e2etarget.TargetActivity}
+  === file channel (run-as net.scrcpy.e2etarget cat files/e2e_state.txt) ===
+  2 540 1000
+  === uiautomator (taps=N last=X,Y node) ===
+  taps=2 last=540,1000
+  === logcat -d -s E2E_TARGET ===
+  06-01 09:54:56.722  2478  2478 I E2E_TARGET: tap #1 at 200,400
+  06-01 09:55:07.117  2478  2478 I E2E_TARGET: tap #2 at 540,1000
+  ```
+  Self-test per-channel asserts: tap#1 file/ui/logcat all `1 200 400`
+  (dx=0 dy=0); tap#2 all `2 540 1000` (dx=0 dy=0). Self-test exit rc=0.
+  **ASSERTION QUERIES for task 4** (`$S`=B serial, e.g. emulator-5554):
+   • uiautomator: `adb -s $S shell uiautomator dump /sdcard/e2e_ui.xml >/dev/null;
+     adb -s $S shell cat /sdcard/e2e_ui.xml | grep -o 'taps=[0-9]* last=[0-9-]*,[0-9-]*' | head -1`
+     → `taps=N last=X,Y`.
+   • logcat: `adb -s $S logcat -d -s E2E_TARGET | grep -oE 'tap #[0-9]+ at [0-9-]+,[0-9-]+' | tail -1`
+     → `tap #N at X,Y`.
+   • file: `adb -s $S shell run-as net.scrcpy.e2etarget cat files/e2e_state.txt`
+     → `N X Y`.
+   Or just source `e2e/lib-target.sh` and call `target_read_state $S [file|ui|logcat]`
+   (echoes normalised `"N X Y"`), `target_install/target_launch/target_reset`.
+  **Committed:** e2e/target-app/** (gradle sources, manifest, TargetActivity.kt,
+  strings.xml, gradlew + wrapper, .gitignore, README), e2e/lib-target.sh,
+  e2e/m3-target-selftest.sh, STATE. NOT committed: build/ or the APK (gitignored).
+  Container `--rm` self-removed; emulator killed; AVD deleted; no stray
+  qemu/scrcpy-e2e; mf-e2e-*/redroid/ws-scrcpy untouched.
 - 2026-06-01: **M3 task 1 DONE — A→B adb-over-TCP reachability solved, verified,
   and documented. WORKING ADDRESS SCHEME: A's app connects to `10.0.2.2:6555`,
   where a host-side `socat TCP-LISTEN:6555,fork,reuseaddr -> TCP:127.0.0.1:5555`
