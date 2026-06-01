@@ -29,7 +29,7 @@ placeholder; `android-app` debug APK builds in the build image.
       `platforms;android-36`, build-tools, `ndk;<pin>`, `cmake;3.22.1`,
       `emulator`, `system-images;android-30;google_apis;x86_64`). Write
       `e2e/Dockerfile` for it.
-- [ ] Scaffold `android-app/` Gradle project (Kotlin, AGP, minSdk 26, target 36),
+- [x] Scaffold `android-app/` Gradle project (Kotlin, AGP, minSdk 26, target 36),
       a stub `MainActivity`, `:app` module, that produces `app-debug.apk`.
       Add `android-app/.gitignore` (build/, .gradle/, local.properties).
 - [ ] Write `e2e/run.sh` — single entry script: build image, start two emulators
@@ -52,6 +52,16 @@ placeholder; `android-app` debug APK builds in the build image.
   emulator, avdmanager, sdkmanager, adb, NDK 27.2.12479018, cmake 3.22.1,
   build-tools 37.0.0, platforms;android-36, system-images;android-30;google_apis;
   x86_64 all present. Image requires `--device /dev/kvm` to run the emulators.
+- 2026-06-01: M0 task 2 done. Scaffolded `android-app/` Kotlin-DSL Gradle project:
+  AGP 8.7.3, Gradle 8.9, Kotlin 2.0.21, compileSdk/targetSdk 36, minSdk 26,
+  applicationId `net.scrcpy.android`, stub `MainActivity` (AppCompat, TextView WIP
+  message), deps androidx.core-ktx 1.13.1 + appcompat 1.7.0. `.gitignore` added
+  (build/, .gradle/, local.properties, *.iml, .idea/, .kotlin/, .cxx/). Built green
+  on d-claude in `scrcpy-e2e:dev` via the persistent `scrcpy-gradle-cache` volume:
+  `./gradlew --no-daemon assembleDebug` → BUILD SUCCESSFUL (exit 0), APK at
+  `/srv/work/scrcpy-e2e/android-app/app/build/outputs/apk/debug/app-debug.apk`
+  (3.18 MB). Note: AGP 8.7.3 emits a non-fatal warning for compileSdk 36 (tested up
+  to 35) and auto-pulled build-tools 34.0.0 as its default — build still green.
 
 ---
 
