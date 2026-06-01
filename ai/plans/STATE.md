@@ -24,7 +24,7 @@ Accept: `bash e2e/run.sh` on d-claude exits 0 with two booted emulators + green
 placeholder; `android-app` debug APK builds in the build image.
 
 ### Tasks
-- [ ] Decide & document the Android build image (reuse the proven d-claude pattern:
+- [x] Decide & document the Android build image (reuse the proven d-claude pattern:
       `eclipse-temurin:21-jdk` + cmdline-tools + sdkmanager: platform-tools,
       `platforms;android-36`, build-tools, `ndk;<pin>`, `cmake;3.22.1`,
       `emulator`, `system-images;android-30;google_apis;x86_64`). Write
@@ -47,6 +47,11 @@ placeholder; `android-app` debug APK builds in the build image.
 - 2026-06-01: Repo forked → `d33mobile/scrcpy-mobile`; branch
   `android-controls-android` created; README overwritten (WIP + goal); master plan
   + research written. Starting M0.
+- 2026-06-01: M0 task 1 done. `e2e/Dockerfile` + `e2e/README.md` written and built
+  green on d-claude as `scrcpy-e2e:dev` (7.96 GB). Verified inside the image:
+  emulator, avdmanager, sdkmanager, adb, NDK 27.2.12479018, cmake 3.22.1,
+  build-tools 37.0.0, platforms;android-36, system-images;android-30;google_apis;
+  x86_64 all present. Image requires `--device /dev/kvm` to run the emulators.
 
 ---
 
