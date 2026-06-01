@@ -19,8 +19,15 @@ android {
         versionName = "0.1-wip"
 
         ndk {
-            // x86_64 only for now (emulator target); arm64-v8a comes at M4.
+            // x86_64 = the emulator target (the proven, e2e-green path).
+            // arm64-v8a = real-device ABI (M4 stretch): the native stack
+            // cross-compiles + libscrcpy.so links as AArch64 (ELF/symbol-proven),
+            // but is NOT yet tested on real hardware. abiFilters is a *filter*:
+            // each ABI is only packaged when its jniLibs/<abi>/*.so are staged
+            // (see stage-natives.sh <OUTPUT_DIR> <abi>), so listing both here is
+            // safe for the x86_64-only e2e build (it stages x86_64 only).
             abiFilters += "x86_64"
+            abiFilters += "arm64-v8a"
         }
     }
 

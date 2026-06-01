@@ -53,15 +53,92 @@ run is green; then the goal is declared fully realized.
       `bash e2e/run.sh` (two emulators, coordinate-faithful taps); document the
       one-command build+run; keep WIP framing honest (x86_64 emulator-proven, software
       decode, minimal UI, arm64/real-device untested).
-- [ ] (STRETCH, non-blocking for the goal) Cross-compile the native stack +
+- [x] (STRETCH, non-blocking for the goal) Cross-compile the native stack +
       libscrcpy.so for arm64-v8a (real-device ABI) and prove it builds + a bionic
       smoke; document it as not-yet-tested-on-device. If it proves time-consuming,
       note it as future work — it does NOT block declaring the locked goal done.
+      DONE — full arm64-v8a native stack cross-compiles + libscrcpy.so links as
+      AArch64 (ELF/symbol-proven); the qemu bionic smoke is impractical off-device
+      (no /system/bin/linker64), so it is ELF-verified-only + explicitly
+      NOT-tested-on-real-device. abiFilters now lists both ABIs; APK packages both;
+      x86_64 e2e path unaffected. See progress log 2026-06-01.
 - [ ] FINAL goal audit: clear caches, run `bash e2e/run.sh` cold once more green;
       confirm hermeticity + docs; then declare the locked goal FULLY REALIZED in
       STATE.md. (When this passes, the loop should stop.)
 
 ### Progress log
+- 2026-06-01: **M4 task 3 (STRETCH) DONE — the FULL native stack + libscrcpy.so
+  cross-compile cleanly for arm64-v8a (real-device ABI), proven by AArch64 ELF +
+  symbol evidence. On-device run is NOT tested (no arm64 hardware/runtime); the qemu
+  bionic smoke is impractical off-device and is documented as such. NON-BLOCKING for
+  the locked x86_64 goal, which is untouched.**
+  **WHAT BUILT (one `docker run`, scrcpy-e2e:dev on d-claude, NDK 27.2.12479018, NO
+  /dev/kvm — pure build):** `cd porting && TARGET_ABI=arm64-v8a
+  ANDROID_NDK_ROOT=/opt/android-sdk/ndk/27.2.12479018 make android-libs` exited 0,
+  producing `output/android/arm64-v8a/`: libavcodec/avformat/avutil/swscale/
+  swresample.a (FFmpeg), libssl.a + libcrypto.a (OpenSSL 1.1.1w), libadb-full.a
+  (adb-mobile + BoringSSL + protobuf/abseil + lz4/zstd/brotli), libSDL2.so, and
+  **libscrcpy.so (12,746,384 B) linked** + libc++_shared.so staged.
+  **ABI-SPECIFIC FIXES NEEDED: NONE.** The build scripts + android-defines.sh were
+  already correctly parameterized for arm64-v8a from the M1 scaffolding, and every
+  per-script `case "$TARGET_ABI"` did the right thing on the first try:
+   • android-defines.sh mapped arm64-v8a → triple `aarch64-linux-android`, clang
+     `aarch64-linux-android26-clang` (verified in the log: `CC: ...
+     aarch64-linux-android26-clang`).
+   • FFmpeg configured `--arch=aarch64` (log: `ARCH aarch64 (generic)`) and built its
+     **NEON** asm — `libavcodec/aarch64/*_neon.o` (h264/hevc/idct/hpeldsp/sbrdsp/...)
+     all assembled; the x86asm path was correctly inert for non-x86 (no
+     `--disable-x86asm` needed — that flag only fires for x86_64/the TEXTREL concern,
+     which does not apply to AArch64 NEON).
+   • OpenSSL configured `android-arm64` (log: `Configuring OpenSSL 1.1.1w for
+     android-arm64`, with `aarch64-linux-android26-clang ... -DSHA256_ASM ...`).
+   • adb-mobile + protobuf/lz4/zstd/brotli cross-compiled with cmake
+     `-DANDROID_ABI=arm64-v8a` (API floored at 29 for the fdsan unique_fd gate, as on
+     x86_64); host protoc stayed host (x86_64).
+   • SDL2 cmake `-DANDROID_ABI=arm64-v8a`; libscrcpy cmake `-DANDROID_ABI=arm64-v8a`.
+  **AArch64 ELF / SYMBOL EVIDENCE (llvm-readelf/llvm-nm/llvm-objdump in a throwaway
+  verify container):**
+   • `libscrcpy.so`: **ELF64 / little-endian / Machine: AArch64 / Type: DYN**;
+     `SONAME libscrcpy.so`; NEEDED `libSDL2.so liblog.so libandroid.so libGLESv3.so
+     libGLESv2.so libEGL.so libOpenSLES.so libm.so libz.so libc++_shared.so libdl.so
+     libc.so`; **NO TEXTREL** (`readelf -d | grep TEXTREL` empty → bionic-loadable);
+     `nm -D` exports `T scrcpy_main` (0x2c9078) + `T scrcpy_android_main` (0x2ce1fc).
+     `objdump --disassemble-symbols=scrcpy_main` shows a real AArch64 prologue
+     (`sub sp,sp,#0x1c0` / `stp x29,x30,...` / `mrs x22,TPIDR_EL0` / `adrp x0,...`) —
+     genuine compiled code, not a stub.
+   • `libSDL2.so`: ELF64 / AArch64 / DYN, `SONAME libSDL2.so`.
+   • `libadb-full.a`: members are ELF64 / AArch64 (checked `bio_ssl.cc.o`).
+  **SMOKE — ELF-VERIFIED-ONLY, on-device run UNTESTED (honest):** built the aarch64
+  `scrcpy-smoke` exe (porting/scripts/scrcpy-smoke.c, calls `scrcpy_main --help`)
+  linking the arm64 libscrcpy.so + tiny AArch64 stub .so for the Android system libs
+  (GLES/EGL/android/log/OpenSLES). Attempted to run it under `qemu-aarch64` (qemu-user
+  installed transiently) pointed at the NDK sysroot + a libdir with the built libs.
+  **It cannot run:** the bionic-linked exe's PT_INTERP is the hardcoded
+  `/system/bin/linker64`, which exists only on a real Android device / arm system
+  image — `qemu-aarch64: Could not open '/system/bin/linker64'`. The NDK ships no
+  standalone `linker64`, and the image only has an **x86_64** system image (no arm64
+  hardware/runtime is available). This is the well-known limitation of running bionic
+  binaries under qemu-user, and it is the ACCEPTABLE fallback the task allows: the
+  static ELF/symbol verification + clean link stand as the proof the arm64 stack
+  builds; **the on-device run is explicitly NOT tested.** (The x86_64 smoke ran fine
+  in M1 because the x86_64 binary loads on the bionic linker inside the x86_64
+  emulator — we have that hardware; we do not have arm64.)
+  **abiFilters / APK (cheap, done):** `android-app/app/build.gradle.kts` now lists
+  BOTH `x86_64` and `arm64-v8a` (with a comment that abiFilters is a *filter* — each
+  ABI is packaged only when its `jniLibs/<abi>/*.so` are staged). Verified two ways
+  offline (gradle-cache volume): (1) staging BOTH ABIs then `assembleDebug` →
+  `app-debug.apk` contains `lib/x86_64/{libscrcpy,libSDL2,libc++_shared}.so` AND
+  `lib/arm64-v8a/{libscrcpy,libSDL2,libc++_shared}.so` — both ABIs package; (2)
+  staging x86_64 ONLY (the e2e path) → APK contains `lib/x86_64/` only — so the
+  locked x86_64 e2e goal is **unaffected** by the filter widening.
+  **x86_64 path intact:** no build-script/cmake/defines changes were made (none were
+  needed — already parameterized); the only source change is the additive abiFilters
+  line. iOS untouched. **SELF-CLEAN:** all `docker run --rm`; 0 stray scrcpy-e2e
+  containers / qemu-system after; mf-e2e-*/redroid/ws-scrcpy never touched; the
+  d-claude jniLibs staging dir (build artifact) removed. **Committed (source/scripts
+  only):** android-app/app/build.gradle.kts (abiFilters), STATE.md. NOT committed:
+  any .so/.a/.apk/jniLibs/assets/artifacts (gitignored). NEXT: M4 task 4 (final cold
+  audit) — non-blocked by this stretch.
 - 2026-06-01: **M4 task 2 DONE — README.md + status table + ai/plans rewritten to
   reflect the proven, honest reality (docs-only; no code/build changes).**
   **README.md:** updated the WIP banner (kept the banner + goal; dropped the stale
