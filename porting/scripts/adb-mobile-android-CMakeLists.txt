@@ -1,0 +1,224 @@
+# Standalone CMake project to cross-compile wsvn53/adb-mobile's libadb-full.a for
+# Android via the NDK. Generated/used by make-adb-mobile-android.sh.
+#
+# WHY STANDALONE (not nmeum/android-tools' own CMakeLists):
+#   nmeum/android-tools' vendor/CMakeLists.txt runs `pkg_check_modules(... REQUIRED)`
+#   for brotli/lz4/pcre2/zstd/protobuf/libusb and builds a pile of unrelated host
+#   tools (fastboot, e2fsprogs, f2fs, mkbootimg, ...). The iOS port tolerates this by
+#   having those deps installed via brew on the build host. Under the NDK we only need
+#   the static libadb stack, so we compile exactly the iOS target set against the
+#   vendored Android sources + the porting/ client overrides, and pull boringssl in as
+#   a subdirectory (it cross-compiles cleanly with the NDK toolchain + host Go).
+#
+# Inputs (-D...):
+#   ADB_MOBILE_ROOT   = external/adb-mobile checkout root
+#   AT_ROOT           = $ADB_MOBILE_ROOT/android-tools
+#   VENDOR            = $AT_ROOT/vendor
+#   PORTING_ADB       = $ADB_MOBILE_ROOT/porting/adb        (client overrides + include)
+#   PROTOBUF_INCLUDE  = path to protobuf src include (for generated proto headers)
+#   ADB_PROTO_GEN_DIR = dir containing host-protoc-generated *.pb.{cc,h}
+#   Standard NDK toolchain vars come from android.toolchain.cmake.
+
+cmake_minimum_required(VERSION 3.18)
+project(adb-mobile-android CXX C)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_EXTENSIONS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Android (bionic) supplies the attributes/headers adb expects; silence the noise.
+add_compile_options(-Wno-attributes -Wno-deprecated-declarations -Wno-unused-parameter)
+add_compile_definitions(_FILE_OFFSET_BITS=64 _LARGEFILE64_SOURCE)
+# We target API 26 but the vendored liblog/adb sources reference bionic symbols
+# marked __INTRODUCED_IN(>26) (e.g. __android_log_write_log_message @30). Make such
+# references weak instead of hard compile errors (NDK-sanctioned escape hatch); the
+# adb stack is the in-process ADB *host*, it does not actually call them at runtime.
+add_compile_definitions(__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__)
+
+if(NOT DEFINED ADB_MOBILE_ROOT)
+  message(FATAL_ERROR "ADB_MOBILE_ROOT must be defined")
+endif()
+set(AT_ROOT      "${ADB_MOBILE_ROOT}/android-tools")
+set(VENDOR       "${AT_ROOT}/vendor")
+set(PORTING_ADB  "${ADB_MOBILE_ROOT}/porting/adb")
+
+# --- boringssl (provides crypto / ssl / decrepit). Cross-compiles with NDK + Go. ----
+# Disable its tests/tools; we only want the static libs.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+add_subdirectory(${VENDOR}/boringssl ${CMAKE_BINARY_DIR}/boringssl EXCLUDE_FROM_ALL)
+
+# Common include dirs shared by most targets.
+set(ADB_INCLUDES
+  ${VENDOR}/boringssl/include
+  ${VENDOR}/adb
+  ${VENDOR}/adb/crypto/include
+  ${VENDOR}/adb/pairing_auth/include
+  ${VENDOR}/adb/pairing_connection/include
+  ${VENDOR}/adb/tls/include
+  ${VENDOR}/core/include
+  ${VENDOR}/core/libcrypto_utils/include
+  ${VENDOR}/core/libcutils/include
+  ${VENDOR}/core/diagnose_usb/include
+  ${VENDOR}/libbase/include
+  ${VENDOR}/libziparchive/include
+  ${VENDOR}/logging/liblog/include
+  ${VENDOR}/fmtlib/include
+  ${PORTING_ADB}/include
+  ${PROTOBUF_INCLUDE}
+  ${PROTOBUF_INCLUDE}/../third_party/abseil-cpp   # absl headers used by protobuf
+  ${ADB_PROTO_GEN_DIR}
+  ${VENDOR}                  # <build/version.h>, <platform_tools_version.h> (generated)
+  ${VENDOR}/boringssl/third_party/googletest/googletest/include  # gtest_prod.h
+  ${ADB_MOBILE_ROOT}/external/lz4/lib       # lz4.h
+  ${ADB_MOBILE_ROOT}/external/zstd/lib      # zstd.h
+  ${ADB_MOBILE_ROOT}/external/brotli/c/include  # brotli/*.h
+)
+
+# --------------------------------------------------------------------------------
+# liblog
+add_library(log STATIC
+  ${VENDOR}/logging/liblog/log_event_list.cpp
+  ${VENDOR}/logging/liblog/log_event_write.cpp
+  ${VENDOR}/logging/liblog/logger_name.cpp
+  ${VENDOR}/logging/liblog/logger_read.cpp
+  ${VENDOR}/logging/liblog/logger_write.cpp
+  ${VENDOR}/logging/liblog/properties.cpp
+  ${VENDOR}/logging/liblog/logprint.cpp)
+target_compile_definitions(log PRIVATE -DLIBLOG_LOG_TAG=1006 -D_XOPEN_SOURCE=700 -DFAKE_LOG_DEVICE=1)
+target_include_directories(log PUBLIC ${ADB_INCLUDES})
+
+# fmt (bundled) ------------------------------------------------------------------
+add_library(fmt STATIC ${VENDOR}/fmtlib/src/format.cc)
+target_include_directories(fmt PUBLIC ${VENDOR}/fmtlib/include)
+
+# libbase ------------------------------------------------------------------------
+add_library(base STATIC
+  ${VENDOR}/libbase/abi_compatibility.cpp
+  ${VENDOR}/libbase/chrono_utils.cpp
+  ${VENDOR}/libbase/cmsg.cpp
+  ${VENDOR}/libbase/file.cpp
+  ${VENDOR}/libbase/hex.cpp
+  ${VENDOR}/libbase/logging.cpp
+  ${VENDOR}/libbase/mapped_file.cpp
+  ${VENDOR}/libbase/parsebool.cpp
+  ${VENDOR}/libbase/parsenetaddress.cpp
+  ${VENDOR}/libbase/posix_strerror_r.cpp
+  ${VENDOR}/libbase/process.cpp
+  ${VENDOR}/libbase/properties.cpp
+  ${VENDOR}/libbase/result.cpp
+  ${VENDOR}/libbase/stringprintf.cpp
+  ${VENDOR}/libbase/strings.cpp
+  ${VENDOR}/libbase/threads.cpp
+  ${VENDOR}/libbase/test_utils.cpp
+  ${VENDOR}/libbase/errors_unix.cpp)
+target_include_directories(base PUBLIC ${ADB_INCLUDES})
+
+# libcutils ----------------------------------------------------------------------
+add_library(cutils STATIC
+  ${VENDOR}/core/libcutils/android_get_control_file.cpp
+  ${VENDOR}/core/libcutils/ashmem-host.cpp
+  ${VENDOR}/core/libcutils/config_utils.cpp
+  ${VENDOR}/core/libcutils/fs.cpp
+  ${VENDOR}/core/libcutils/hashmap.cpp
+  ${VENDOR}/core/libcutils/iosched_policy.cpp
+  ${VENDOR}/core/libcutils/load_file.cpp
+  ${VENDOR}/core/libcutils/multiuser.cpp
+  ${VENDOR}/core/libcutils/native_handle.cpp
+  ${VENDOR}/core/libcutils/properties.cpp
+  ${VENDOR}/core/libcutils/record_stream.cpp
+  ${VENDOR}/core/libcutils/socket_inaddr_any_server_unix.cpp
+  ${VENDOR}/core/libcutils/socket_local_client_unix.cpp
+  ${VENDOR}/core/libcutils/socket_local_server_unix.cpp
+  ${VENDOR}/core/libcutils/socket_network_client_unix.cpp
+  ${VENDOR}/core/libcutils/sockets_unix.cpp
+  ${VENDOR}/core/libcutils/sockets.cpp
+  ${VENDOR}/core/libcutils/str_parms.cpp
+  ${VENDOR}/core/libcutils/strlcpy.c
+  ${VENDOR}/core/libcutils/trace-host.cpp
+  ${VENDOR}/core/libcutils/canned_fs_config.cpp
+  ${VENDOR}/core/libcutils/fs_config.cpp)
+target_compile_definitions(cutils PRIVATE -D_GNU_SOURCE)
+target_include_directories(cutils PRIVATE ${VENDOR}/core/libutils/include)
+target_include_directories(cutils PUBLIC ${ADB_INCLUDES})
+
+# libdiagnoseusb -----------------------------------------------------------------
+add_library(diagnoseusb STATIC ${VENDOR}/core/diagnose_usb/diagnose_usb.cpp)
+target_include_directories(diagnoseusb PUBLIC ${ADB_INCLUDES})
+
+# libcrypto_utils (android_pubkey) ----------------------------------------------
+add_library(crypto_utils STATIC ${VENDOR}/core/libcrypto_utils/android_pubkey.cpp)
+target_include_directories(crypto_utils PUBLIC ${ADB_INCLUDES})
+
+# libziparchive ------------------------------------------------------------------
+# Needs the in-tree incfs_support + gtest_prod headers; ZLIB_CONST makes the NDK
+# zlib's z_stream.next_in const-typed so the AOSP `next_in = const uint8_t*` assigns.
+add_library(zip STATIC
+  ${VENDOR}/libziparchive/zip_archive.cc
+  ${VENDOR}/libziparchive/zip_archive_stream_entry.cc
+  ${VENDOR}/libziparchive/zip_cd_entry_map.cc
+  ${VENDOR}/libziparchive/zip_writer.cc
+  ${VENDOR}/libziparchive/incfs_support/signal_handling.cpp)
+target_compile_definitions(zip PRIVATE ZLIB_CONST)
+target_include_directories(zip PUBLIC ${ADB_INCLUDES}
+  ${VENDOR}/core/libutils/include
+  ${VENDOR}/libziparchive/incfs_support/include
+  ${VENDOR}/boringssl/third_party/googletest/googletest/include)
+
+# libadb_crypto_defaults ---------------------------------------------------------
+add_library(adb_crypto_defaults STATIC
+  ${VENDOR}/adb/crypto/key.cpp
+  ${VENDOR}/adb/crypto/rsa_2048_key.cpp
+  ${VENDOR}/adb/crypto/x509_generator.cpp)
+target_include_directories(adb_crypto_defaults PUBLIC ${ADB_INCLUDES})
+
+# libadb_tls_connection_defaults -------------------------------------------------
+add_library(adb_tls_connection_defaults STATIC
+  ${VENDOR}/adb/tls/adb_ca_list.cpp
+  ${VENDOR}/adb/tls/tls_connection.cpp)
+target_include_directories(adb_tls_connection_defaults PUBLIC ${ADB_INCLUDES})
+
+# --------------------------------------------------------------------------------
+# libadb — the core. We use the porting/ client overrides (in-process server, no
+# fork, capture-printf API) exactly like the iOS build does. The driver script
+# (make-adb-mobile-android.sh) OVERLAYS porting/adb/client/* onto vendor/adb/client/
+# before configuring — that is how the iOS make-adb.sh does it, and it is required so
+# that path-qualified `#include "client/file_sync_client.h"` resolves to the porting
+# header (extended do_sync_pull signature) rather than the vendor one. The porting
+# main.cpp amalgamates many adb/*.cpp via #include, so we must NOT also compile those
+# here (would double-define). Source list mirrors iOS make-adb.sh: the overlaid client
+# files + proto-generated sources + a handful of adb/*.cpp the amalgamation omits.
+add_library(adb STATIC
+  # client files (porting overrides, now overlaid into vendor/adb/client by driver)
+  ${VENDOR}/adb/client/adb_client.cpp
+  ${VENDOR}/adb/client/adb_install.cpp
+  ${VENDOR}/adb/client/bugreport.cpp
+  ${VENDOR}/adb/client/commandline.cpp
+  ${VENDOR}/adb/client/file_sync_client.cpp
+  ${VENDOR}/adb/client/main.cpp
+  # adb sources not amalgamated by main.cpp
+  ${VENDOR}/adb/client/auth.cpp
+  ${VENDOR}/adb/client/adb_wifi.cpp
+  ${VENDOR}/adb/client/line_printer.cpp
+  ${VENDOR}/adb/client/incremental.cpp
+  ${VENDOR}/adb/client/incremental_server.cpp
+  ${VENDOR}/adb/client/incremental_utils.cpp
+  ${VENDOR}/adb/services.cpp
+  ${VENDOR}/adb/sysdeps_unix.cpp
+  ${VENDOR}/adb/sysdeps/errno.cpp
+  ${VENDOR}/adb/sysdeps/posix/network.cpp
+  # crypto/tls/pairing
+  ${VENDOR}/adb/pairing_auth/aes_128_gcm.cpp
+  ${VENDOR}/adb/pairing_auth/pairing_auth.cpp
+  ${VENDOR}/adb/pairing_connection/pairing_connection.cpp
+  # proto-generated
+  ${ADB_PROTO_SRCS})
+target_compile_definitions(adb PRIVATE -D_GNU_SOURCE)
+target_compile_definitions(adb PUBLIC -DADB_HOST=1)
+# porting overrides + the (overlaid) vendor client dir win for path-qualified headers.
+target_include_directories(adb BEFORE PUBLIC ${PORTING_ADB}/include ${VENDOR}/adb ${VENDOR}/adb/client)
+target_include_directories(adb PUBLIC ${ADB_INCLUDES})
+target_link_libraries(adb PUBLIC base log cutils crypto_utils diagnoseusb
+  adb_crypto_defaults adb_tls_connection_defaults zip crypto ssl fmt z)

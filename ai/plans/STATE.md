@@ -39,7 +39,7 @@ Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
       (not the iOS UIKit path).
 - [x] Provide **OpenSSL** for android x86_64 (cross-build, or a vetted prebuilt /
       NDK approach). Document choice.
-- [ ] Build **adb-mobile** (`external/adb-mobile`) for android x86_64, or substitute
+- [x] Build **adb-mobile** (`external/adb-mobile`) for android x86_64, or substitute
       an equivalent in-process ADB path. Document choice.
 - [ ] Adapt `porting/src` behind the NDK path: drop the `OpenGLES/ES3` include (use
       SDL2 GLES), bypass VideoToolbox/Metal hijacks → software FFmpeg decode + SDL
@@ -49,6 +49,72 @@ Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
       `scrcpy-e2e:dev` on d-claude and capture output. Commit + push when green.
 
 ### Progress log
+- 2026-06-01: **M1 task 5 done — adb-mobile (`libadb-full.a`) cross-compiled for
+  android x86_64.** This is the in-process ADB host (`adb_commandline_porting` API)
+  that pushes the scrcpy server + opens TCP tunnels, same role as the iOS build.
+  **APPROACH (b): a standalone NDK driver, NOT adb-mobile's own ios-cmake build.**
+  `external/adb-mobile`'s build (`make-adb.sh`) wires Google's adb sources through
+  `nmeum/android-tools`'s CMake, which `pkg_check_modules(REQUIRED)` for
+  brotli/lz4/pcre2/zstd/protobuf/libusb and compiles a pile of unrelated host tools
+  (fastboot/e2fsprogs/...); the iOS port tolerates that via brew. Rather than fight
+  it under the NDK, I wrote a small **standalone CMakeLists**
+  (`porting/scripts/adb-mobile-android-CMakeLists.txt`) that compiles **exactly the
+  iOS static-lib target set** (libadb + libbase/libcutils/liblog/libcrypto_utils/
+  libdiagnoseusb/libziparchive/adb_crypto_defaults/adb_tls_connection_defaults + fmt)
+  against the vendored AOSP sources + the `porting/adb/` client overrides, pulling
+  **boringssl** in as a subdirectory (cross-compiles cleanly with NDK + host Go). The
+  iOS targets in `external/adb-mobile` are 100% untouched (additive, alongside).
+  Driver = **`porting/scripts/make-adb-mobile-android.sh`** (wired into
+  `Makefile.android` `android-adb-mobile`, TODO stub replaced; iOS Makefile untouched).
+  It (1) builds a **host protoc 28.3** from the pinned `external/protobuf` (apt's is
+  the wrong ver) + uses it to generate adb's `*.pb.cc`; (2) cross-compiles **Android
+  libprotobuf** and **lz4/zstd/brotli** (transport/incremental compression) via the
+  NDK cmake toolchain; (3) **overlays `porting/adb/client/*` onto vendor/adb/client/**
+  (the iOS mechanism — required so path-qualified `#include "client/file_sync_client.h"`
+  resolves to the porting override, in-process no-fork server + extended do_sync_pull);
+  (4) configures+builds the standalone project through the NDK; (5) bundles every `.a`
+  (+ android libprotobuf + lz4/zstd/brotli) into **`output/android/x86_64/libadb-full.a`**
+  via an `llvm-ar -M` MRI script, then `--strip-debug`. **adb_public.h** copied to the
+  android `include/`.
+  **Submodules initialized (pinned, NOT bumped):** `external/adb-mobile` @78c32c2 +
+  its `external/{lz4,zstd,brotli,protobuf}` and `android-tools` vendor subset
+  `{adb,core,libbase,libziparchive,boringssl,fmtlib,logging}` (+ protobuf's nested
+  abseil-cpp/utf8_range). The big unused android-tools vendors (selinux/extras/
+  e2fsprogs/f2fs/libusb/...) are intentionally left un-inited.
+  **Key porting fixes (all in the driver/standalone CMake, none touch committed
+  vendor files — overlay+patch happen on the build host's rsync'd tree which has no
+  `.git`, so patches use idempotent GNU `patch --forward`, not `git am`):**
+   • API floor **29** for this lib only (`ANDROID_API_ADB`, overrides the repo
+     default 26): AOSP `libbase/unique_fd.h` hard-`#if`-gates fdsan on
+     `__ANDROID_API__>=29`; the symbols are weak so the lib still loads on <29, and
+     the adb host runs on the API-30 emulator anyway. (ffmpeg/sdl/openssl stay at 26.)
+   • `-D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__` — liblog/adb reference bionic
+     symbols `__INTRODUCED_IN(30)`; makes those weak refs instead of hard errors.
+   • applied upstream adb patches **0007** (guard the sysdeps `write` macro so it
+     doesn't clobber `std::ostream::write` that abseil str_format pulls in) and
+     **0013** (disable fastdeploy → no `ApkEntry.pb.h` requirement).
+   • `ZLIB_CONST` for libziparchive (NDK zlib `next_in` const mismatch); in-tree
+     incfs_support + gtest_prod includes added.
+   • guarded the porting `main.cpp`'s `#include "fdevent_poll.cpp"` behind
+     `#if !defined(__linux__)` — it amalgamates BOTH poll and epoll backends; on iOS
+     epoll is `__linux__`-excluded so poll wins, but Android IS `__linux__` → both
+     compiled → `fdevent_interrupt` redefinition. Android uses the epoll backend.
+  **BUILT GREEN on d-claude in `scrcpy-e2e:dev`** end-to-end via
+  `make android-adb-mobile` (clean cmake/bundle rebuild): `MAKE_RC=0`,
+  `[adb-mobile-android] DONE`. **apt deps (transient in the run cmd, NOT baked into
+  the image):** `golang-go build-essential make patch` (go is needed for boringssl's
+  codegen; build-essential for the host protoc; patch for the idempotent vendor
+  patching). cmake 3.22.1 + ninja come from `$ANDROID_SDK_ROOT/cmake/*/bin` (script
+  auto-prepends, same trick as the SDL build). **libadb-full.a = 6.1M** (stripped;
+  22.7M unstripped; 980 object members). **VERIFIED Android x86_64** (llvm-nm /
+  llvm-ar / llvm-readelf in the image): defined `T adb_commandline_porting`,
+  `T adb_trace_init_porting`, `T adb_trace_enable_porting`, `T capture_printf`, and
+  the in-process `T launch_server`/`launch_server_thread` overrides; an extracted
+  member (`commandline.cpp.o`) is `ELF64 / X86-64 / REL`; brotli/lz4/zstd/protobuf
+  symbols bundled; `adb_public.h` present in the android include dir.
+  gitignore swallows `output/`+`build/`+`*.a` (only the driver script, the standalone
+  CMakeLists, the Makefile.android edit + STATE committed; submodule pointer NOT
+  bumped — adb-mobile stays @78c32c2).
 - 2026-06-01: **M1 task 4 done — OpenSSL cross-compiled for android x86_64.** New
   `porting/scripts/make-openssl-android.sh` (mirrors the FFmpeg/SDL android-driver
   style; iOS untouched). **OpenSSL 1.1.1w** (matches the iOS OpenSSL-for-iPhone 1.1.1

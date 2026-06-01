@@ -58,8 +58,8 @@ android-openssl: android-mkdir-output
 		bash scripts/make-openssl-android.sh
 
 android-adb-mobile: android-mkdir-output
-	@. scripts/android-defines.sh >/dev/null && \
-		echo "TODO(M1): build adb-mobile for android $(TARGET_ABI) -> $(ANDROID_OUTPUT_DIR)"
+	OUTPUT="$(ANDROID_OUTPUT_DIR)" TARGET_ABI="$(TARGET_ABI)" ANDROID_API="$(ANDROID_API)" \
+		bash scripts/make-adb-mobile-android.sh
 
 android-scrcpy: android-mkdir-output
 	@. scripts/android-defines.sh >/dev/null && \
