@@ -17,10 +17,18 @@ ssh "$HOST" "mkdir -p '$REMOTE_DIR'"
 rsync -az --delete \
   --exclude '.git/' \
   --exclude 'e2e/artifacts/' \
+  --exclude 'output/' \
+  --exclude 'porting/build/' \
+  --exclude 'porting/libs/' \
   --exclude 'android-app/build/' \
   --exclude 'android-app/.gradle/' \
   --exclude 'android-app/app/build/' \
+  --exclude 'android-app/app/src/main/jniLibs/' \
+  --exclude 'android-app/app/src/main/assets/scrcpy-server' \
   --exclude 'android-app/local.properties' \
+  --exclude 'e2e/target-app/build/' \
+  --exclude 'e2e/target-app/.gradle/' \
+  --exclude 'e2e/target-app/app/build/' \
   "$REPO_ROOT/" "$HOST:$REMOTE_DIR/"
 
 log "invoking run.sh on $HOST"

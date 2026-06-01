@@ -67,14 +67,91 @@ cold run.
       letterboxing) was derived empirically from 2 calibration taps and the 3
       validation taps fit it. See progress log + `e2e/lib-automation.sh`,
       `e2e/m3-automation.sh`, `e2e/m3-build-and-automate.sh`.**
-- [ ] Wire this as the REAL e2e in e2e/run.sh (replace the M0 placeholder
+- [x] Wire this as the REAL e2e in e2e/run.sh (replace the M0 placeholder
       assertion): two emulators, connect, automate, assert; idempotent,
       self-cleaning, artifacts (logcat A+B, screenshots) to mounted dir, correct exit
-      codes.
+      codes. **DONE 2026-06-01 — the proven m3-build-and-automate + m3-automation
+      logic is folded INTO e2e/run.sh (sourcing lib-net/lib-target/lib-automation);
+      one `bash e2e/run-on-d-claude.sh` runs the full GOAL chain and exited 0 with
+      every tap on A received by B at the expected coordinate (5/5, max 1px). The M0
+      placeholder is kept as a `--smoke` sub-mode. See progress log.**
 - [ ] Make it reliably green: run `bash e2e/run.sh` via run-on-d-claude.sh ≥3 times
       incl. one cold run; 100% pass. Capture evidence.
 
 ### Progress log
+- 2026-06-01: **M3 task 5 DONE — e2e/run.sh is now the SINGLE authoritative entry
+  that runs the full GOAL e2e end-to-end; one `bash e2e/run-on-d-claude.sh` exited 0
+  with the goal proven (every tap on A received by B at the expected coordinate).**
+  **run.sh STRUCTURE (consolidated — the m3-build-and-automate + m3-automation logic
+  folded in, sourcing lib-net/lib-target/lib-automation):**
+   • OUTER (host): wipe `/artifacts`, build `scrcpy-e2e:dev` if missing, then
+     `docker run --device /dev/kvm` with mounts (repo->/workspace,
+     scrcpy-gradle-cache->/root/.gradle, artifacts->/artifacts) re-invoking itself
+     `--inner`; passes EMU_MEM/BOOT_TIMEOUT/STREAM_SECS/SKIP_BUILD/FORCE_NATIVE_REBUILD
+     through env; prints the SUCCESS/FAILURE banner; propagates the exit code.
+   • INNER `--inner` (default = full): `ensure_build_tools` (apt make/meson/nasm/
+     rsync/socat/pkg-config/golang + SDK cmake on PATH) -> `build_native` (skips if
+     output/android/x86_64/libscrcpy.so present unless FORCE_NATIVE_REBUILD=1) ->
+     `build_apks` (stage-natives + scrcpy-server asset + android-app assembleDebug;
+     target-app assembleDebug; SKIP_BUILD=1 reuses) -> `boot_both` (create+launch
+     B=5554/A=5556 pinned-v33.1.24 mem=1536, wait boot_completed, disable animations)
+     -> install+launch the deterministic target on B + start B logcat ->
+     `ensure_b_reachable` (socat 0.0.0.0:6555 -> 127.0.0.1:5555) -> install android-app
+     on A + start A logcat -> `am start MainActivity --es host 10.0.2.2 --es port 6555`
+     -> uiautomator-locate + tap Connect -> wait <=STREAM_SECS (default 90) for a
+     STABLE stream (`INFO: Connected to` in A's stdio log + scrcpy-server proc on B)
+     -> settle 6s, re-assert target focus on B -> reset B's counter -> inject 5 taps
+     (2 calibration + 3 validation) polling B's file channel per tap -> derive the
+     A->B affine transform from the 2 calibration taps -> assert every tap maps within
+     tolerance + B's total count == sent. **ASSERTS / EXIT:** exit 0 ONLY if Connected
+     + scrcpy-server-on-B + all 5 taps PASS the transform + count 5/5; any failure ->
+     `fail()` banner + non-zero. **Idempotent + self-cleaning** (EXIT trap: stop socat,
+     emu kill A+B, SIGKILL pids, pkill qemu-system, adb kill-server, delete both AVDs;
+     screenshots A+B + adb-devices captured first). **Artifacts -> /artifacts:**
+     logcat-A-full.txt, logcat-B-full.txt, A-scrcpy-stdio.log, screen-emulator-555{4,6}.png,
+     emulator-555{4,6}.log, uidump-A-main.xml, native-build.log, and the per-tap
+     evidence table `m3-automation-evidence.txt`.
+   • INNER `--smoke`: the legacy M0 placeholder (boot both + adb online + B
+     controllable from container adb) kept as a fast harness sanity-check that needs
+     no native lib / APKs. Invoke via `bash e2e/run.sh --smoke`.
+  **run-on-d-claude.sh** stays the thin rsync+invoke+pull wrapper. **BUG FOUND+FIXED:**
+  its `rsync --delete` did NOT exclude `output/`, `porting/build/`, `porting/libs/`,
+  the staged jniLibs/assets, or the target-app build dirs — so the FIRST run DELETED
+  the cached native deps + stripped the ffmpeg source checkout, causing
+  `./configure: No such file or directory`. Fixed by adding those excludes; restored
+  the ffmpeg source via `git checkout -- . && git clean -fdq` in its checkout; the
+  native stack then rebuilt cleanly from scratch in-run.
+  **VERIFIED RUN (BLOCKING, `bash e2e/run-on-d-claude.sh`, d-claude, scrcpy-e2e:dev,
+  --device /dev/kvm, two emulators mem=1536): exit 0, runtime ~14 min** (14:03:23 ->
+  14:17:35; this run also did a full from-scratch native rebuild ~8 min since the
+  cache had been wiped — a warm run skips that). Stream came up
+  `INFO: Connected to 10.0.2.2:6555` with scrcpy-server `net.scrcpy.e2etarget`
+  running on B. **VERBATIM final banner + evidence (run exit 0):**
+  ```
+  12:17:25 [run.sh] PASS: every tap on A's remote view was received by B at the expected coordinate.
+  14:17:35 [run.sh] ==================== SUCCESS (e2e green) ====================
+  ```
+  ```
+  === e2e GOAL: tap-A -> assert-B evidence (2026-06-01 12:17:25) ===
+  A screen = 1080x1920   B screen = 1080x1920
+  Derived A->B transform (scaled x1000): SX=1000 OX=-1000 SY=1109 OY=-70784
+  Tolerance: max(25px, 3% of screen dim)
+  tap  A(ax,ay)       expect B       got B          dx,dy   verdict
+  p1 [calibration] (324,576)  -> expect (323,568)  got (323,568)  dx=0 dy=0 PASS
+  p2 [calibration] (756,1344) -> expect (755,1420) got (755,1420) dx=0 dy=0 PASS
+  p3 [validation]  (540,960)  -> expect (539,994)  got (540,994)  dx=1 dy=0 PASS
+  p4 [validation]  (756,576)  -> expect (755,568)  got (755,568)  dx=0 dy=0 PASS
+  p5 [validation]  (324,1344) -> expect (323,1420) got (323,1420) dx=0 dy=0 PASS
+  B final tap count = 5 (sent 5)
+  ```
+  Every A tap mapped to a distinct, correctly-ordered B location (max 1px error,
+  well under the 25px/3% tolerance); B's count == 5 sent. Container `--rm`
+  auto-removed; emulators killed; AVDs deleted; socat stopped; host left clean
+  (no stray scrcpy-e2e/qemu/socat; mf-e2e-*/redroid/ws-scrcpy untouched). The
+  standalone m3-automation.sh / m3-build-and-automate.sh are now superseded by
+  run.sh (kept for reference). NEXT (task 6): the >=3x incl. cold-run repeat.
+  **Committed:** e2e/run.sh (consolidated), e2e/run-on-d-claude.sh (rsync excludes
+  fix), STATE. NOT committed: APK/.so/jniLibs/assets/artifacts (all gitignored).
 - 2026-06-01: **M3 task 4 DONE — THE GOAL PROVEN: a tap on emulator A's rendered
   remote-view surface is received by emulator B at the expected, coordinate-faithful
   location. 5 taps, 5/5 received, all within tolerance.**
