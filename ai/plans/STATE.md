@@ -18,32 +18,46 @@ host = `d-claude` (ssh). Build/run scratch on d-claude under `/srv/work`.
 
 ---
 
-## Current milestone: **M0 — Scaffolding & red-but-running pipeline**
+## Current milestone: **M1 — Native stack cross-compiled for Android x86_64**
 
-Accept: `bash e2e/run.sh` on d-claude exits 0 with two booted emulators + green
-placeholder; `android-app` debug APK builds in the build image.
+(M0 — Scaffolding & red-but-running pipeline — **PASSED audit 2026-06-01**, all
+5 tasks done; see progress log. Harness boots two emulators green on d-claude.)
+
+Accept: `libscrcpy.so` + its native deps are produced for Android `x86_64`; a tiny
+NDK smoke executable links `scrcpy_main` and prints usage/help without crashing,
+run inside `scrcpy-e2e:dev`. The iOS build must remain intact (do not break it).
+Start with `x86_64` (emulator arch); `arm64-v8a` comes later.
 
 ### Tasks
-- [x] Decide & document the Android build image (reuse the proven d-claude pattern:
-      `eclipse-temurin:21-jdk` + cmdline-tools + sdkmanager: platform-tools,
-      `platforms;android-36`, build-tools, `ndk;<pin>`, `cmake;3.22.1`,
-      `emulator`, `system-images;android-30;google_apis;x86_64`). Write
-      `e2e/Dockerfile` for it.
-- [x] Scaffold `android-app/` Gradle project (Kotlin, AGP, minSdk 26, target 36),
-      a stub `MainActivity`, `:app` module, that produces `app-debug.apk`.
-      Add `android-app/.gitignore` (build/, .gradle/, local.properties).
-- [x] Write `e2e/run.sh` — single entry script: build image, start two emulators
-      (A + B) on one docker network, wait for boot, run a **placeholder**
-      assertion (both `adb` online; B controllable by a baseline `adb shell input`
-      tap that changes a dumpsys value). Exit non-zero on any failure. Make it
-      idempotent and self-cleaning; artifacts to a mounted dir.
-- [x] Make `e2e/run.sh` parameterizable so it can run locally or via
-      `ssh d-claude`. Provide a thin `e2e/run-on-d-claude.sh` that rsyncs the repo
-      to `/srv/work/scrcpy-mobile-e2e` and invokes `run.sh` there.
-- [x] Run the placeholder e2e on d-claude; iterate until green. (Ran green; see
-      2026-06-01 log entry below. Artifacts collected under `e2e/artifacts/`.)
+- [ ] Add an Android NDK cross-compile path to `porting/` **without breaking the
+      iOS build**: new scripts/targets (parallel to the iOS ones) that emit into
+      `output/android/x86_64/`. Drive arch/SDK selection so iOS Makefile targets are
+      untouched. Pin NDK 27.2.12479018 (matches `scrcpy-e2e:dev`).
+- [ ] Cross-compile **FFmpeg** for android x86_64 (NDK clang, `--target-os=android
+      --arch=x86_64`, software H.264 decode; no VideoToolbox).
+- [ ] Cross-compile **SDL2** for android x86_64 using SDL2's native Android backend
+      (not the iOS UIKit path).
+- [ ] Provide **OpenSSL** for android x86_64 (cross-build, or a vetted prebuilt /
+      NDK approach). Document choice.
+- [ ] Build **adb-mobile** (`external/adb-mobile`) for android x86_64, or substitute
+      an equivalent in-process ADB path. Document choice.
+- [ ] Adapt `porting/src` behind the NDK path: drop the `OpenGLES/ES3` include (use
+      SDL2 GLES), bypass VideoToolbox/Metal hijacks → software FFmpeg decode + SDL
+      texture upload, Android clipboard stub. Keep iOS code paths via `#ifdef`.
+- [ ] Build **`libscrcpy.so`** for x86_64; link a tiny NDK smoke executable that
+      calls `scrcpy_main` and prints usage without crashing — run it inside
+      `scrcpy-e2e:dev` on d-claude and capture output. Commit + push when green.
 
 ### Progress log
+- 2026-06-01: **M0 AUDIT PASSED.** Fresh authoritative run on d-claude (after
+  killing two overlapping/racing harness containers that were starving RAM —
+  single clean run only): `AUDIT_RC=0`, SUCCESS banner, both `emulator-5554` and
+  `emulator-5556` reached `device`, all placeholder asserts passed (both online +
+  settings round-trip on B + `am start` moved `mCurrentFocus` to Settings + input
+  keyevent/tap dispatched), `cleanup done (rc=0)`, host left clean (0 scrcpy
+  containers). Cold runtime ~3.5 min. Advancing to M1. NOTE for future runs: only
+  ONE e2e run at a time on d-claude — host shares ~8 GB RAM with unrelated long-
+  running mf-e2e/redroid/ws-scrcpy containers, so concurrent runs OOM/phantom.
 - 2026-06-01: Repo forked → `d33mobile/scrcpy-mobile`; branch
   `android-controls-android` created; README overwritten (WIP + goal); master plan
   + research written. Starting M0.
