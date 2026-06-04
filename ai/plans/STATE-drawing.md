@@ -39,7 +39,7 @@ correct exit codes; reliably green across ≥3 runs incl. one cold run. Then the
 drawing-e2e goal is declared realized and the loop stops.
 
 ### Tasks
-- [ ] Consolidate the D2+D3 flow into ONE authoritative script `e2e/run-draw.sh`
+- [x] Consolidate the D2+D3 flow into ONE authoritative script `e2e/run-draw.sh`
       (+ a thin `e2e/run-draw-on-d-claude.sh` wrapper like run-on-d-claude.sh) that
       runs the full drawing e2e: setup → connect → control assertion (strokes on A
       received by B) → display round-trip (red visible on A) → L shape (B geometry +
@@ -461,6 +461,72 @@ drawing-e2e goal is declared realized and the loop stops.
     m4draw-display.sh; `py_compile` clean on detect_red.py; D3 commit pushed to fork;
     tree clean; no APK/.so/PNG artifacts tracked (only pre-existing iOS/app icons +
     standard per-project gradle-wrapper.jars); `e2e/artifacts` gitignored.
+
+- 2026-06-04: **D4 task 1 DONE** — consolidated the D2+D3 flow into ONE authoritative
+  entry `e2e/run-draw.sh` + a thin d-claude wrapper `e2e/run-draw-on-d-claude.sh`.
+  VERIFIED GREEN end-to-end on d-claude in `scrcpy-e2e:dev` (`ed870b002dfd`, OUTER
+  docker-run `--device /dev/kvm`, `--network none`, 2 emulators mem=1536, scrcpy
+  3.3.4), rc=0, self-cleaned (no stray scrcpy-e2e containers, no leftover qemu;
+  mf-e2e-*/redroid/ws-scrcpy untouched). Runtime ≈ 5.5 min wall (build cached:
+  native skip + APKs UP-TO-DATE; boot→assert ≈ 4 min). Single green run this task;
+  the ≥3-incl-cold reliability run is the NEXT D4 task.
+  * STRUCTURE — `e2e/run-draw.sh` MIRRORS `e2e/run.sh`: it `source`s run.sh (whose
+    dispatch is `BASH_SOURCE==$0`-guarded, so sourcing only exposes helpers) for ALL
+    boot/build/connect plumbing (boot_both/build_native/build_apks/create_avd/
+    launch_emu/wait_boot/cleanup/node_center/wm_size/b_server_proc + EMU/serial/port
+    consts + log/fail) and `lib-net`/`lib-target`/`lib-automation`/`lib-draw` — NO
+    copy-pasted logic. `draw_outer()` = OUTER (build image if missing; `docker run
+    --device /dev/kvm --network none` by default with repo+gradle-cache+artifacts
+    mounts; `E2E_ALLOW_NET=1` escape hatch; SUCCESS/FAILURE banner; propagate rc).
+    `draw_inner()` (`--inner`) sets the cleanup trap then runs the FULL flow folded in
+    from the old m4draw-display.sh: boot both → build native+APKs+draw-APK OFFLINE →
+    install+launch DRAW app on B + android-app on A → bridge B→10.0.2.2:6555 → connect
+    (3-attempt loop) → derive A→B transform (2 cal taps) → **PART1** single diagonal:
+    CONTROL B-geometry + DISPLAY before/after red-on-A + shape signature, fits the
+    B→A display affine → **PART2** L: 2 segments CONTROL on B + red along both
+    affine-PREDICTED bands on A + L-shaped combined bbox. Exit 0 only if ALL pass.
+    `e2e/m4draw-display.sh` is now a THIN SHIM (`exec bash run-draw.sh "$@"`); the D2
+    driver `m4draw-control.sh` is untouched. `e2e/run.sh` UNCHANGED (only sourced;
+    `bash -n` clean, sourcing exposes 6 helpers with 0 side-effect output, `--smoke`
+    dispatch line intact).
+  * WRAPPER — `e2e/run-draw-on-d-claude.sh` mirrors run-on-d-claude.sh: rsync the tree
+    to `d-claude:/srv/work/scrcpy-mobile-e2e` with the SAME excludes (`.git/`,
+    `e2e/artifacts/`, `output/`, `porting/build|libs/`, android-app + target-app
+    `build/.gradle`) PLUS `e2e/draw-app/{build,.gradle,app/build}` so the draw cache
+    persists; invoke `bash e2e/run-draw.sh`; rsync artifacts back to `e2e/artifacts/`.
+  * GREEN RUN BANNER (verbatim): `==================== DRAW e2e SUCCESS (drawing
+    round-trip green) ====================` ; wrapper `SUCCESS (remote DRAWING e2e
+    green)` ; WRAPPER EXIT CODE: 0.
+  * EVIDENCE (verbatim `drawing-e2e-evidence.txt`; A 1080x1920 B 1080x1920;
+    transform A(324,576)->B(323,568) ; A(756,1344)->B(755,1420); SX=1000 OX=-1000
+    SY=1109 OY=-70784; A crop=(54,153,993,1766)):
+        PART1 single stroke A(216,288)->(594,768) 1000ms:
+          B geometry [PASS] (CONTROL): points=15 start=(215,249) effEnd=(590,776)
+            expE=(593,781) dStart=(0,0) dEnd=(3,5) [PASS]
+          A_before red: red_count=0 (<=50 : PASS)
+          A_after  red: red_count=20982 bbox=382,489,983,1345 (>=500 : PASS; 0s poll)
+          A_after shape: W=601 H=856 (diagonal both>=80 : PASS)
+          B->A affine: SX=1642 OX=28970 SY=1658 OY=76158 (ok=1) [~1.6x]
+          PART1: B(control)=PASS A(display)=PASS
+        PART2 L seg1 V A(324,288)->(324,633) ; seg2 H (324,633)->(626,633):
+          B seg1 [PASS] points=12 start=(323,249) effEnd=(323,593) dEnd=(0,38)
+          B seg2 [PASS] points=16 start=(323,631) effEnd=(623,631) dEnd=(2,0)
+          A_L_before red: red_count=0 (<=50 : PASS; B reset → A's red drained)
+          A_L_after (full crop): red_count=19879 bbox=579,489,983,1204 W=404 H=715 (PASS)
+          seg1(V) PREDICTED band=(469,399,649,1212): red_count=13514 (>=200 : PASS)
+          seg2(H) PREDICTED band=(649,1032,1145,1212): red_count=6365 (>=200 : PASS)
+          B final: STROKE 1 points=12 …; STROKE 2 points=16 …; taps=0; strokes=2
+          L: B(control)=PASS A(display)=PASS  ;  OVERALL: PASS
+  * VISUAL CONFIRMATION (read the A PNGs, not just counts): A_after.png = a clean red
+    DIAGONAL on A's decoded remote view `strokes=1`; A_L_after.png = a clean red **L**
+    (vertical + horizontal arms sharing the corner) `strokes=2`. Genuine round-trip
+    screenshots of emulator A. Artifacts pulled back to e2e/artifacts/
+    (drawing-e2e-evidence.txt + A_before/A_after/A_L_before/A_L_after PNGs +
+    screen-B-draw.png + e2e_draw.txt).
+  * Committed ONLY `e2e/run-draw.sh` (new authoritative entry), `e2e/run-draw-on-
+    d-claude.sh` (wrapper), `e2e/m4draw-display.sh` (→ thin shim), this STATE file.
+    No APK/.so/PNG/artifacts (`e2e/artifacts` gitignored). Pushed to
+    `fork/android-controls-android`.
 
 ## Backlog (next milestones — see plan for full accept criteria)
 - D4 — `e2e/run-draw.sh` one script, hermetic `--network none`, reliably green ≥3
