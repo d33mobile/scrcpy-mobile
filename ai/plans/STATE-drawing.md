@@ -28,48 +28,35 @@ Android goal is already DONE & audited — see `STATE.md`; do NOT break `e2e/run
 
 ---
 
-## Current milestone: **D3 — Display round-trip: the drawn shape is visible on A**
+## Current milestone: **D4 — One script, reliable, audited**
 
-Accept: In the same two-emulator run, after a stroke is drawn (via A), a screenshot
-of EMULATOR A (its decoded remote view of B) shows the red stroke at the expected
-location — proven by detect_red.py: red-pixel count jumps from ~0 (before) to a clear
-threshold (after) within A's remote-view region, and the red blob's location
-corresponds to the swipe path on A. Plus a multi-segment shape (e.g. an L) is asserted
-both on B (geometry) and on A (visible).
+Accept: A single one-script entry (e.g. `bash e2e/run-draw.sh`, with a d-claude
+wrapper) runs the whole drawing e2e hermetically (inner `--network none` by default):
+boots two emulators, connects A→B, injects strokes incl. an L, asserts BOTH the
+stroke geometry on B AND the drawn shapes' visibility on A (before/after red delta +
+cross-validated location); idempotent, self-cleaning, artifacts to a mounted dir,
+correct exit codes; reliably green across ≥3 runs incl. one cold run. Then the
+drawing-e2e goal is declared realized and the loop stops.
 
 ### Tasks
-- [x] Extend the driver (m4draw-control.sh → or a D3 variant) to capture an A
-      screenshot (`adb -s emulator-5556 exec-out screencap -p`) BEFORE the stroke and
-      AFTER, and run detect_red.py on A's screenshot. ASSERT: before red_count≈0 in
-      the canvas region; after red_count jumps over a clear threshold; and the after
-      red blob's centroid/bbox is near the swipe path on A (the stroke is displayed
-      where we drew it). This proves the drawn shape rendered back through the video
-      stream to A.  → DONE in `e2e/m4draw-display.sh` (D3 driver). before=0
-      after=21151 (≫500). The "centroid near A swipe coords" sub-claim turned out to
-      be EMPIRICALLY FALSE for this app (A renders B MAGNIFIED ~1.8x, not at swipe
-      coords — see progress log); replaced with a stronger, non-circular location
-      proof: shape signature + a B→A display affine fit from the single stroke,
-      cross-validated against the L. See 2026-06-04 D3 log.
-- [x] Account for A's remote-view region: A keeps system bars + letterboxes B's video
-      (per the M3 transform OY offset). Restrict/crop the red detection to A's surface
-      region (or just exclude the strokes=N overlay area / status bar) so the
-      assertion is about the rendered remote canvas, not chrome. Derive the A-side
-      expected location from the A swipe coords directly (the stroke on A's surface
-      shows ~where you swiped).  → DONE: crop = (54,153,993,1766) of 1080x1920
-      (excludes A status bar top 8%, nav bar bottom 8%, gray `strokes=N` overlay,
-      right black letterbox). CORRECTION to the assumption: the displayed stroke does
-      NOT show at the A swipe coords — A magnifies B ~1.8x top-left-anchored, so the
-      expected A location is derived from B's recorded coords via a fitted B→A display
-      affine, NOT from the swipe coords. Shapes kept in A's UPPER region so the whole
-      image is unclipped.
-- [x] Add a MULTI-SEGMENT shape (e.g. an L or triangle = 2-3 chained swipes on A) and
-      assert BOTH: its segments on B (geometry, via lib-draw strokes) AND its
-      visibility on A (red present along each segment in A's screenshot). Capture
-      before/after A screenshots as artifacts.  → DONE: an L (vertical arm + horizontal
-      arm sharing a corner). B: 2 strokes, per-segment geometry within tol. A: red
-      along BOTH predicted segment bands (seg1 V=14118px, seg2 H=5424px) + L-shaped
-      combined bbox (W=404 H=715, both ≫80). A_L_after.png shows a clean L. Artifacts
-      A_before/A_after/A_L_before/A_L_after + B screencap + evidence captured.
+- [ ] Consolidate the D2+D3 flow into ONE authoritative script `e2e/run-draw.sh`
+      (+ a thin `e2e/run-draw-on-d-claude.sh` wrapper like run-on-d-claude.sh) that
+      runs the full drawing e2e: setup → connect → control assertion (strokes on A
+      received by B) → display round-trip (red visible on A) → L shape (B geometry +
+      A visibility). Inner `--network none` by default; hermetic (baked image);
+      artifacts (A before/after + B screencaps, detect_red outputs, evidence file) to
+      the mounted dir; clear SUCCESS/FAILURE banner; correct exit codes; self-cleaning.
+      Reuse m4draw-display.sh logic; don't break e2e/run.sh (the tap e2e).
+- [ ] Make it reliably green: run `bash e2e/run-draw-on-d-claude.sh` (or run-draw.sh)
+      ≥3 times incl. ONE cold run (clear gradle volume + native caches; the baked image
+      must still go offline). 100% pass; capture the run-by-run table (exit codes,
+      per-stroke B geometry + A red before/after, runtimes). Debug any flake to root
+      cause (no flaky excuse).
+- [ ] FINAL drawing-e2e audit: from a clean state run `bash e2e/run-draw.sh` (or the
+      wrapper) cold under `--network none`, green; confirm the full proof (strokes→B
+      geometry + shapes→A visibility) + hermeticity + e2e/run.sh still green. Then
+      declare the drawing-e2e goal FULLY REALIZED in STATE-drawing.md (Current
+      milestone → DONE). When this passes, the loop STOPS.
 
 ### Progress log
 - 2026-06-04: Plan + STATE-drawing created. Goal: prove strokes work (A→B geometry)
@@ -419,6 +406,61 @@ both on B (geometry) and on A (visible).
     APK/.so/PNG/artifacts (`e2e/artifacts` gitignored). Pushed to
     `fork/android-controls-android`.
     >>> D3 milestone accept-criteria all met — spawn the D3 foreground AUDIT next.
+
+- 2026-06-04: **D3 FOREGROUND AUDIT — PASS** (skeptical judge, all checks reproduced
+  with COMMANDS on d-claude in `scrcpy-e2e:dev` `ed870b002dfd`, OUTER docker-run,
+  `--network none`, `--device /dev/kvm`, 2 emulators mem=1536). Advancing Current
+  milestone D3 → D4. Commit `7c463b1` (only `e2e/m4draw-display.sh` + STATE) pushed
+  to `fork/android-controls-android` (remote tip == local HEAD); tree clean.
+  * CHECK 1 assertion integrity (read m4draw-display.sh) — DISPLAY proof is REAL, not
+    gamed: (a) BEFORE/AFTER DELTA — `A_before` captured pre-swipe, `v_before=FAIL`
+    unless before<=A_RED_BEFORE_MAX=50 (line 457); `v_after=FAIL` unless
+    after>=A_RED_AFTER_MIN=500 (line 458); BOTH feed P1_A_VERDICT (467) → all_pass →
+    `fail` (non-zero). A permanently-red frame → before>50 → FAIL. (b) CROSS-VALIDATED
+    location — the B→A display affine `BA_*` is fitted ONLY from the single diagonal
+    stroke (lines 474-488, gated on P1 PASS); the L's V/H bands are computed via
+    `ba_map` using `BA_*` (lines 578-591) i.e. derived from stroke #1, NOT the L;
+    SEG1/SEG2 red must each be >=A_SEG_MIN=200 in those PREDICTED bands (616-617). A
+    blank/mis-placed L → ~0 red in predicted bands → FAIL. The `BA_OK=0` fallback to
+    whole-crop only triggers when P1 already failed (all_pass already 0) — can't
+    rescue. (c) B GEOMETRY — `assert_b_stroke` requires points>2 + start & effEnd
+    within max(30px,4%) (198-205); tap/blank/wrong-location → FAIL. Confirmed honest.
+  * CHECK 2 ran it myself (authoritative, BLOCKING, OUTER docker-run `--network none`,
+    rc=0, `DRAW-DISPLAY SUCCESS (D3 green)`, `cleanup done (rc=0)`). A connected:
+    `INFO: Connected to 10.0.2.2:6555`; B server proc `net.scrcpy.e2edraw` (scrcpy
+    scid=7241967f 3.3.4; A render `Renderer: opengles2 / OpenGL ES 3.0 SwiftShader`).
+    Transform from cal taps A(324,576)->B(323,568) ; A(756,1344)->B(755,1420);
+    SX=1000 OX=-1000 SY=1109 OY=-70784. A crop=(54,153,993,1766). VERBATIM from MY run:
+        PART1 single stroke A(216,288)->(594,768) 1000ms:
+          B geometry [PASS]: points=15 start=(215,249) effEnd=(583,768)
+            expE=(593,781) dStart=(0,0) dEnd=(10,13) [PASS]
+          A_before red: red_count=0 bbox=NA            (<=50 : PASS)
+          A_after  red: red_count=21062 bbox=382,489,983,1350 (>=500 : PASS; 0s poll)
+          A_after shape: W=601 H=861 (diagonal both>=80 : PASS)
+          B->A affine: SX=1633 OX=30905 SY=1658 OY=76158 (ok=1) [~1.6x magnification]
+          PART1: B=PASS A=PASS
+        PART2 L: seg1 V A(324,288)->(324,633) ; seg2 H (324,633)->(626,633):
+          B seg1 [PASS] points=14 start=(323,249) effEnd=(323,626) dEnd=(0,5)
+          B seg2 [PASS] points=12 start=(323,631) effEnd=(604,631) dEnd=(21,0)
+          A_L_before red: red_count=0 (<=50 : PASS; B reset → A's red drained,
+            proving the displayed red TRACKS B's live canvas, not a static artifact)
+          A_L_after (full crop): red_count=20891 bbox=579,489,983,1204
+            L-shape W=404 H=715 (both>=80 : PASS)
+          seg1(V) PREDICTED band=(468,399,648,1212): red_count=14507 (>=200 : PASS)
+          seg2(H) PREDICTED band=(648,1032,1142,1212): red_count=6384 (>=200 : PASS)
+          B final: STROKE 1 points=14 …; STROKE 2 points=12 …; taps=0; strokes=2
+          L: B=PASS A=PASS  ;  OVERALL: PASS
+    VISUAL CONFIRMATION (read the A PNGs, not just detect_red counts): A_before.png =
+    white canvas `strokes=0` no red; A_after.png = a clean red DIAGONAL on A's decoded
+    remote view `strokes=1`; A_L_after.png = a clean red **L** (vertical + horizontal
+    arms sharing the corner) `strokes=2`. Genuine remote-view screenshots of emulator
+    A (B content magnified into A's surface + A's own status/nav bars). Round-trip is
+    real and visible. Self-cleaned: no stray scrcpy-e2e containers, no e2e qemu procs;
+    mf-e2e-*/redroid/ws-scrcpy untouched.
+  * CHECK 3 no regressions: `bash -n` clean on run.sh + m4draw-control.sh +
+    m4draw-display.sh; `py_compile` clean on detect_red.py; D3 commit pushed to fork;
+    tree clean; no APK/.so/PNG artifacts tracked (only pre-existing iOS/app icons +
+    standard per-project gradle-wrapper.jars); `e2e/artifacts` gitignored.
 
 ## Backlog (next milestones — see plan for full accept criteria)
 - D4 — `e2e/run-draw.sh` one script, hermetic `--network none`, reliably green ≥3
