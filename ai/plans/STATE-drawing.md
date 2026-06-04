@@ -56,7 +56,7 @@ d-claude.
       `draw_read_strokes`, `draw_swipe`, `draw_count_red` — the red-pixel analysis
       can shell out to a tiny tool; if it needs python3+Pillow, do the next task
       first or install transiently for this verify and bake it next).
-- [ ] Bake draw-app gradle deps into the offline `GRADLE_USER_HOME` in
+- [x] Bake draw-app gradle deps into the offline `GRADLE_USER_HOME` in
       `e2e/Dockerfile` (same priming pattern as android-app/target-app) AND add
       `python3` + `python3-pil` (Pillow) for screenshot color analysis. Rebuild
       `scrcpy-e2e:dev` (SDK/NDK/native-src/gradle layers must stay cached); verify
@@ -143,6 +143,45 @@ d-claude.
   * Full driver exited rc=0 (`D1 STANDALONE VERIFY: PASS`); self-cleaned (emulator
     killed, AVD deleted, `--rm` container; mf-e2e-*/redroid/ws-scrcpy untouched).
     Committed ONLY `e2e/lib-draw.sh`, `e2e/detect_red.py`, this STATE file.
+- 2026-06-04: D1 task 3 DONE — **D1 COMPLETE (all 3 tasks)**. Baked draw-app gradle
+  deps + Pillow into `scrcpy-e2e:dev`; rebuilt on d-claude with the expensive SDK
+  layers CACHED; verified offline draw-app build + `import PIL` under `--network none`.
+  * `e2e/Dockerfile` EDITS (additive, ordering-aware):
+    - apt build-deps layer (the native-build apt RUN, which sits AFTER the SDK/NDK/
+      system-image/emulator layers): appended `python3 python3-pil` to the existing
+      package list — NO new layer, NO runtime apt. The Android-SDK layers are BEFORE
+      this apt layer so they stay cached when apt changes.
+    - GRADLE-PRIME layer: added `COPY e2e/draw-app /opt/prime/draw-app` and a third
+      `( cd /opt/prime/draw-app && ./gradlew --no-daemon assembleDebug )`; added
+      draw-app's `app/build` + `.gradle` to the post-prime `rm -rf` cleanup. draw-app
+      is fully standalone (no sdl-android-java glue ref, unlike android-app), AGP
+      8.7.3 / Gradle 8.9 / Kotlin 2.0.21 — same as target-app.
+    - `.dockerignore`: only a doc-comment line added (draw-app listed among the
+      primed projects). draw-app SOURCES were already in context (under `e2e/`);
+      `**/build` + `**/.gradle` already exclude its artifacts. No functional change.
+  * REBUILD CACHE RESULT (d-claude, `docker build -t scrcpy-e2e:dev -f e2e/Dockerfile .`,
+    context=repo root, image sha256:ed870b00…): layers 1-5 (FROM, base apt,
+    cmdline-tools, `sdkmanager` SDK+NDK+cmake+system-image, emulator-binary pin) all
+    `CACHED` — ZERO SDK re-download. Only layer 6 apt (`+python3 python3-pil`) re-ran
+    (86.4s), native-src git/wget (12.1s), and the gradle-prime (180.5s). Prime ran all
+    THREE `assembleDebug`: android-app `BUILD SUCCESSFUL in 2m 1s`, target-app `27s`,
+    draw-app `27s` (tiny delta → shared cache). `/opt/gradle-home` = 582M. Image
+    `naming to docker.io/library/scrcpy-e2e:dev DONE`.
+  * VERIFY (rebuilt image):
+    - Pillow, `docker run --rm --network none scrcpy-e2e:dev bash -lc 'python3 -c
+      "import PIL, PIL.Image; print(PIL.__version__)"'` → `12.1.1` (no network).
+    - Offline draw-app, `docker run --rm --network none -v
+      /srv/work/scrcpy-mobile-e2e:/workspace:ro scrcpy-e2e:dev bash -lc 'cp -r
+      /workspace/e2e/draw-app /tmp/draw && cd /tmp/draw && export
+      GRADLE_USER_HOME=/opt/gradle-home && ./gradlew --no-daemon --offline
+      assembleDebug'` → VERBATIM `BUILD SUCCESSFUL in 16s` / `33 actionable tasks: 14
+      executed, 19 from cache`, APK `app-debug.apk` 821737 bytes. Under `--network
+      none` → the baked offline `GRADLE_USER_HOME` is sufficient; no fetch.
+    - Existing builds undisturbed (same `--network none`, baked gradle home):
+      target-app `--offline assembleDebug` → `target-app: BUILD OK`; android-app
+      `--offline help` → `android-app: --offline help OK (deps resolvable)`.
+  * Committed ONLY `e2e/Dockerfile`, `.dockerignore`, this STATE file (no artifacts).
+    >>> D1 milestone accept-criteria all met — spawn the D1 foreground AUDIT next.
 
 ## Backlog (next milestones — see plan for full accept criteria)
 - D2 — Stroke from A → control assertion on B (two emulators, connect, swipe on A,

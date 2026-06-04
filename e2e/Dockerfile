@@ -97,11 +97,18 @@ RUN cp ${ANDROID_SDK_ROOT}/emulator/package.xml /tmp/emu-package.xml \
 #       * scrcpy/sdl/adb cmake+ninja come from the Android-SDK cmake package above,
 #         which the scripts put on PATH; ninja-build is also baked as a safety net.
 # build-essential supplies gcc/g++/make; make/patch are kept explicit for clarity.
+#   - python3 + python3-pil : the drawing-e2e screenshot color analysis
+#     (e2e/detect_red.py imports PIL/Pillow) runs at e2e RUNTIME under
+#     `--network none`, so Pillow must be baked here — no runtime apt. Added to this
+#     existing apt layer (which already sits AFTER the SDK/NDK/system-image layers)
+#     so the expensive Android-SDK layers stay CACHED; only this apt layer and the
+#     layers after it re-run when these packages change.
 # IMPORTANT: this layer is APPENDED AFTER the expensive SDK/NDK/system-image layers
 # so a rebuild only re-runs this apt layer and does NOT re-download the Android SDK.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential make nasm golang-go ninja-build pkg-config \
         patch socat rsync meson \
+        python3 python3-pil \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-staged NATIVE SOURCE (hermeticity). The three native deps (FFmpeg, SDL2,
@@ -139,8 +146,9 @@ RUN mkdir -p ${NATIVE_SRC_DIR} \
 #
 # Here we PRIME an offline GRADLE_USER_HOME=/opt/gradle-home at IMAGE-build time
 # (network allowed during build; only the RUNTIME must be hermetic): we COPY the
-# two real Gradle projects (android-app + e2e/target-app) and the SDL Java glue
-# they reference, then run `assembleDebug` for BOTH with GRADLE_USER_HOME pointing
+# real Gradle projects (android-app + e2e/target-app + e2e/draw-app) and the SDL
+# Java glue they reference, then run `assembleDebug` for EACH with GRADLE_USER_HOME
+# pointing
 # at /opt/gradle-home. That single resolve downloads (a) the gradle-8.9 wrapper
 # distribution into wrapper/dists, and (b) every AGP/Kotlin/AndroidX/Maven
 # artifact the build needs into caches/modules-2 — exactly what a runtime
@@ -155,6 +163,7 @@ RUN mkdir -p ${NATIVE_SRC_DIR} \
 ENV GRADLE_USER_HOME=/opt/gradle-home
 COPY android-app /opt/prime/android-app
 COPY e2e/target-app /opt/prime/target-app
+COPY e2e/draw-app /opt/prime/draw-app
 COPY porting/vendor/sdl-android-java /opt/prime/porting/vendor/sdl-android-java
 RUN set -eux; \
     sdk_cmake_dir="$(ls -d ${ANDROID_SDK_ROOT}/cmake/*/bin 2>/dev/null | sort -V | tail -1)"; \
@@ -166,12 +175,18 @@ RUN set -eux; \
         && ./gradlew --no-daemon assembleDebug ); \
     ( cd /opt/prime/target-app \
         && ./gradlew --no-daemon assembleDebug ); \
+    # draw-app (net.scrcpy.e2edraw) — same AGP 8.7.3 / Gradle 8.9 / Kotlin 2.0.21 /
+    # androidx as target-app, so its dep delta over the above is tiny; prime it
+    # explicitly so a runtime `--offline` build of draw-app is guaranteed green.
+    ( cd /opt/prime/draw-app \
+        && ./gradlew --no-daemon assembleDebug ); \
     # Stop any lingering daemon, drop the primed projects' build outputs (keep only
     # the populated /opt/gradle-home cache), and make the gradle home world-writable
     # so the runtime (non-root or root) can write lock files / new caches into it.
     ( cd /opt/prime/android-app && ./gradlew --stop >/dev/null 2>&1 || true ); \
     rm -rf /opt/prime/android-app/app/build /opt/prime/android-app/.gradle \
-           /opt/prime/target-app/app/build /opt/prime/target-app/.gradle; \
+           /opt/prime/target-app/app/build /opt/prime/target-app/.gradle \
+           /opt/prime/draw-app/app/build /opt/prime/draw-app/.gradle; \
     chmod -R a+rwX /opt/gradle-home; \
     ls /opt/gradle-home/wrapper/dists; \
     du -sh /opt/gradle-home

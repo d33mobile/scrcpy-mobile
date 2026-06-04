@@ -2,6 +2,7 @@
 #   - e2e/                          (Dockerfile + harness scripts)
 #   - android-app/                  (Gradle project, for the offline gradle-home prime)
 #   - e2e/target-app/               (Gradle project, for the prime)
+#   - e2e/draw-app/                 (Gradle project, for the prime)
 #   - porting/vendor/sdl-android-java (SDL Java glue android-app's sourceSets reference)
 # Everything else (submodules, native build trees, artifacts, git) is mounted at
 # runtime via -v "$REPO_ROOT:/workspace" — it must NOT bloat the build context.
