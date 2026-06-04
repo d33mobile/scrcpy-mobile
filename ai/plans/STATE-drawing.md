@@ -28,39 +28,31 @@ Android goal is already DONE & audited — see `STATE.md`; do NOT break `e2e/run
 
 ---
 
-## Current milestone: **D1 — Drawing app on B + standalone stroke capture**
+## Current milestone: **D2 — Stroke from A → control assertion on B**
 
-Accept: `e2e/draw-app/` builds; installed on ONE emulator, an `adb shell input
-swipe` injected directly on it produces (a) a recorded multi-point stroke whose
-start/end match the swipe and (b) visible red pixels along the path in that
-emulator's screenshot. Draw-app gradle deps baked into the image. Verified on
-d-claude.
+Accept: Two emulators (B=draw app, A=controller). A connects to B and renders B's
+canvas. The A→B affine transform is derived via 2 calibration taps (lib-automation).
+A swipe injected on A is received by B's draw app as a multi-point stroke whose
+start/end map within tolerance of the expected A→B coordinates.
 
 ### Tasks
-- [x] Build `e2e/draw-app/` — a minimal standalone Gradle/Android project (mirror
-      `e2e/target-app/`'s AGP 8.7.3 / Gradle 8.9 / Kotlin 2.0.21 setup), package
-      `net.scrcpy.e2edraw`, fullscreen white `DrawActivity` with a custom drawing
-      View: ACTION_DOWN/MOVE/UP capture strokes, draw thick bright-red (`#FF0000`,
-      width ~12) polylines on a persistent Bitmap, record per-stroke geometry
-      (points, start, end, bbox in device px) to channels: file
-      `filesDir/e2e_draw.txt`, logcat tag `E2E_DRAW`, and a `strokes=N` summary.
-      ALSO record single touches as `taps=N last=X,Y` (so `lib-automation.sh`
-      calibration still works). Add `.gitignore` (build/, .gradle/).
-- [x] Verify standalone on d-claude in `scrcpy-e2e:dev` (BLOCKING): build the APK,
-      boot ONE emulator, install + launch the draw app, `adb shell input swipe
-      X0 Y0 X1 Y1 300`, then assert: (a) `e2e_draw.txt`/logcat show a stroke with
-      points>2 and start≈(X0,Y0) end≈(X1,Y1) within tolerance; (b) `exec-out
-      screencap -p` shows red pixels (count over threshold) with bbox spanning the
-      path. Capture verbatim evidence. Write the assertion helpers into a new
-      `e2e/lib-draw.sh` (e.g. `draw_install`, `draw_launch`, `draw_reset`,
-      `draw_read_strokes`, `draw_swipe`, `draw_count_red` — the red-pixel analysis
-      can shell out to a tiny tool; if it needs python3+Pillow, do the next task
-      first or install transiently for this verify and bake it next).
-- [x] Bake draw-app gradle deps into the offline `GRADLE_USER_HOME` in
-      `e2e/Dockerfile` (same priming pattern as android-app/target-app) AND add
-      `python3` + `python3-pil` (Pillow) for screenshot color analysis. Rebuild
-      `scrcpy-e2e:dev` (SDK/NDK/native-src/gradle layers must stay cached); verify
-      the tools + draw-app deps are present in the image.
+- [ ] Build a D2 driver (new e2e helper or extend a copy of the connect flow) that:
+      boots BOTH emulators (B=5554, A=5556, mem=1536), installs+launches the DRAW
+      app on B, brings up the lib-net socat bridge (10.0.2.2:6555), installs the
+      android-app (controller) on A, drives A's MainActivity→Connect→ScrcpyActivity
+      to 10.0.2.2:6555, waits for Connected + stable stream (A now shows B's white
+      draw canvas).
+- [ ] Derive the A→B transform with 2 calibration taps on A (lib-automation
+      auto_derive_transform), reading B's `taps=N last=X,Y` from the draw app (it
+      records single touches as taps). Reset the draw app's stroke/tap state after
+      connect so calibration is clean.
+- [ ] Inject a STROKE on A: `adb -s emulator-5556 shell input swipe AX0 AY0 AX1 AY1
+      <ms>` over the remote-view surface. Compute expected B endpoints via the
+      transform.
+- [ ] ASSERT on B (lib-draw): the draw app recorded a NEW stroke with points>2 (a
+      real drag forwarded by scrcpy, not a tap), start≈expected_B_start and
+      end≈expected_B_end within max(30px,4%). Capture verbatim (AX,AY → expected B →
+      recorded B). (The DISPLAY round-trip — red visible in A's screenshot — is D3.)
 
 ### Progress log
 - 2026-06-04: Plan + STATE-drawing created. Goal: prove strokes work (A→B geometry)
@@ -182,10 +174,42 @@ d-claude.
       `--offline help` → `android-app: --offline help OK (deps resolvable)`.
   * Committed ONLY `e2e/Dockerfile`, `.dockerignore`, this STATE file (no artifacts).
     >>> D1 milestone accept-criteria all met — spawn the D1 foreground AUDIT next.
+- 2026-06-04: **D1 FOREGROUND AUDIT — PASS** (skeptical judge, all checks reproduced
+  with COMMANDS on d-claude in `scrcpy-e2e:dev` `ed870b002dfd`, `--network none`
+  `--device /dev/kvm`). Advancing Current milestone D1 → D2.
+  * CHECK 1 hermetic build (CURRENT image, no network): `python3 -c "import PIL"` →
+    `PIL 12.1.1`; draw-app `./gradlew --no-daemon --offline assembleDebug` with baked
+    `GRADLE_USER_HOME=/opt/gradle-home` → `BUILD SUCCESSFUL in 15s`, APK 821737 bytes.
+    Dockerfile confirmed: `python3 python3-pil` appended to the post-SDK apt layer +
+    `COPY e2e/draw-app /opt/prime/draw-app` + draw-app `assembleDebug` in the prime
+    RUN. Image SDK layers current (built 18:54 from the committed context).
+  * CHECK 2 standalone swipe→stroke+red (authoritative, BLOCKING, in-context): ONE
+    emulator (mem=1536, API 30, emulator v33.1.24), APK built offline, installed +
+    `DrawActivity` focused, screen `1080x1920`, `input swipe 300 800 760 1400 300`.
+    - CONTROL (verbatim `e2e_draw.txt`):
+        STROKE 1 points=8 start=300,800 end=760,1400 bbox=300,800,760,1400
+        taps=0 last=-1,-1
+        strokes=1
+      LOGCAT: `E2E_DRAW: stroke #1 points=8 start=300,800 end=760,1400 …`. strokes=1,
+      points=8 (>2, real drag), start/end deltas ALL 0 (tol max(25,3%)=32px X / 57px Y).
+    - DISPLAY (`exec-out screencap -p` → `detect_red.py`):
+        red_count=7483 bbox=294,794,684,1299 centroid=488,1046
+      7483 ≫ 2000 threshold; bbox spans the path (minx 294≈300, miny 794≈800). maxx/maxy
+      stop ~76/101px short — the documented unpainted final ACTION_UP gap (`input swipe`
+      doesn't draw a MOVE to the last point); RECORDED end is exact. Benign WARN, not a
+      fail.
+    - NEGATIVE (white-corner crop `850,50,1070,400`): `red_count=0 bbox=NA` — detector
+      is NOT trivially always-positive.
+    Driver exited rc=0 `D1 STANDALONE VERIFY: PASS`; self-cleaned; mf-e2e-*/redroid/
+    ws-scrcpy untouched; no stray scrcpy-e2e containers.
+  * CHECK 3 sanity (no regressions): target-app `--offline assembleDebug` → `BUILD
+    SUCCESSFUL`; android-app `--offline help` → `BUILD SUCCESSFUL` (deps resolve);
+    `bash -n` clean on run.sh + lib-draw.sh, `py_compile` clean on detect_red.py; NO
+    apk/build tracked (`git ls-files` clean); all 3 D1 commits (d2e25c4, 287fc09,
+    4620e9f) pushed to `fork/android-controls-android`; tree clean. detect_red.py +
+    lib-draw.sh work exactly as committed.
 
 ## Backlog (next milestones — see plan for full accept criteria)
-- D2 — Stroke from A → control assertion on B (two emulators, connect, swipe on A,
-  assert B recorded the scaled stroke).
 - D3 — Display round-trip: red shape visible in A's screenshot at expected location;
   add a multi-segment shape.
 - D4 — `e2e/run-draw.sh` one script, hermetic `--network none`, reliably green ≥3
