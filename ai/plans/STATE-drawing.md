@@ -28,31 +28,33 @@ Android goal is already DONE & audited — see `STATE.md`; do NOT break `e2e/run
 
 ---
 
-## Current milestone: **D2 — Stroke from A → control assertion on B**
+## Current milestone: **D3 — Display round-trip: the drawn shape is visible on A**
 
-Accept: Two emulators (B=draw app, A=controller). A connects to B and renders B's
-canvas. The A→B affine transform is derived via 2 calibration taps (lib-automation).
-A swipe injected on A is received by B's draw app as a multi-point stroke whose
-start/end map within tolerance of the expected A→B coordinates.
+Accept: In the same two-emulator run, after a stroke is drawn (via A), a screenshot
+of EMULATOR A (its decoded remote view of B) shows the red stroke at the expected
+location — proven by detect_red.py: red-pixel count jumps from ~0 (before) to a clear
+threshold (after) within A's remote-view region, and the red blob's location
+corresponds to the swipe path on A. Plus a multi-segment shape (e.g. an L) is asserted
+both on B (geometry) and on A (visible).
 
 ### Tasks
-- [x] Build a D2 driver (new e2e helper or extend a copy of the connect flow) that:
-      boots BOTH emulators (B=5554, A=5556, mem=1536), installs+launches the DRAW
-      app on B, brings up the lib-net socat bridge (10.0.2.2:6555), installs the
-      android-app (controller) on A, drives A's MainActivity→Connect→ScrcpyActivity
-      to 10.0.2.2:6555, waits for Connected + stable stream (A now shows B's white
-      draw canvas).
-- [x] Derive the A→B transform with 2 calibration taps on A (lib-automation
-      auto_derive_transform), reading B's `taps=N last=X,Y` from the draw app (it
-      records single touches as taps). Reset the draw app's stroke/tap state after
-      connect so calibration is clean.
-- [x] Inject a STROKE on A: `adb -s emulator-5556 shell input swipe AX0 AY0 AX1 AY1
-      <ms>` over the remote-view surface. Compute expected B endpoints via the
-      transform.
-- [x] ASSERT on B (lib-draw): the draw app recorded a NEW stroke with points>2 (a
-      real drag forwarded by scrcpy, not a tap), start≈expected_B_start and
-      end≈expected_B_end within max(30px,4%). Capture verbatim (AX,AY → expected B →
-      recorded B). (The DISPLAY round-trip — red visible in A's screenshot — is D3.)
+- [ ] Extend the driver (m4draw-control.sh → or a D3 variant) to capture an A
+      screenshot (`adb -s emulator-5556 exec-out screencap -p`) BEFORE the stroke and
+      AFTER, and run detect_red.py on A's screenshot. ASSERT: before red_count≈0 in
+      the canvas region; after red_count jumps over a clear threshold; and the after
+      red blob's centroid/bbox is near the swipe path on A (the stroke is displayed
+      where we drew it). This proves the drawn shape rendered back through the video
+      stream to A.
+- [ ] Account for A's remote-view region: A keeps system bars + letterboxes B's video
+      (per the M3 transform OY offset). Restrict/crop the red detection to A's surface
+      region (or just exclude the strokes=N overlay area / status bar) so the
+      assertion is about the rendered remote canvas, not chrome. Derive the A-side
+      expected location from the A swipe coords directly (the stroke on A's surface
+      shows ~where you swiped).
+- [ ] Add a MULTI-SEGMENT shape (e.g. an L or triangle = 2-3 chained swipes on A) and
+      assert BOTH: its segments on B (geometry, via lib-draw strokes) AND its
+      visibility on A (red present along each segment in A's screenshot). Capture
+      before/after A screenshots as artifacts.
 
 ### Progress log
 - 2026-06-04: Plan + STATE-drawing created. Goal: prove strokes work (A→B geometry)
@@ -288,9 +290,52 @@ start/end map within tolerance of the expected A→B coordinates.
     guard), this STATE file. No APK/.so/artifacts. Pushed to
     `fork/android-controls-android`.
     >>> D2 milestone accept-criteria all met — spawn the D2 foreground AUDIT next.
+- 2026-06-04: **D2 FOREGROUND AUDIT — PASS** (skeptical judge, all 4 checks
+  reproduced with COMMANDS on d-claude in `scrcpy-e2e:dev`, OUTER docker-run,
+  `--network none`, `--device /dev/kvm`, 2 emulators mem=1536). Advancing Current
+  milestone D2 → D3.
+  * CHECK 1 assertion integrity (read m4draw-control.sh): swipe injected on
+    `SERIAL_A`=emulator-5556 (NOT B) via `draw_swipe` (line 323); stroke read from B
+    via `run-as net.scrcpy.e2edraw cat files/e2e_draw.txt` (lib-draw); transform
+    DERIVED EACH RUN from 2 calibration taps (lines 252-278, `auto_derive_transform`,
+    hard-fails if a cal tap isn't received). PASS requires ALL of: `points>2` (line
+    369, tap fails), `start≈expected` and `effEnd≈expected` within max(30px,4%)
+    (lines 370-372, AB_ABS_TOL=30/AB_REL_TOL_PCT=4). The "effEnd = bbox corner in
+    travel direction" is NOT a silent accept: the bbox is the real min/max of
+    recorded points, so effEnd reflects the genuine drag extent and must reach within
+    tol of the expected FAR endpoint — a tap/short drag has a small bbox → effEnd near
+    start → FAILS the end assertion; a wrong-mapping/wrong-direction stroke lands far
+    → FAILS; no-stroke → `all_pass=0` + `fail` (non-zero). Confirmed honest.
+  * CHECK 2 run.sh intact: `bash -n e2e/run.sh` clean; the dispatch is guarded by
+    `if [ "${BASH_SOURCE[0]}" = "$0" ]` so executed behavior (outer/inner/--smoke
+    cases) is unchanged; sourcing produces 0 bytes of output and exposes
+    boot_both/build_native/node_center/wm_size/b_server_proc (verified). Guard gates
+    ONLY the top-level dispatch.
+  * CHECK 3 ran it myself (authoritative, BLOCKING, OUTER docker-run `--network none`,
+    rc=0, `DRAW SUCCESS (D2 green)`, `cleanup done (rc=0)`). A connected:
+    `INFO: Connected to 10.0.2.2:6555`; B server proc:
+    `net.scrcpy.e2edraw` (scrcpy injecting into the draw app on B). Per-stroke
+    evidence VERBATIM from MY run (transform derived from cal taps
+    A(324,576)->B(323,568) ; A(756,1344)->B(755,1420); SX=1000 OX=-1000 SY=1109
+    OY=-70784; tol max(30px,4%)):
+        STROKE 1 [PASS] points=9
+          A swipe : (378,672)->(702,1248)  expect B: start=(377,674) end=(701,1313)
+          got B: start=(377,675) bbox=(377,675,698,1308)  effEnd=(698,1308)
+          delta : start dx=0 dy=1 (PASS)   end dx=3 dy=5 (PASS)
+        STROKE 2 [PASS] points=14
+          A swipe : (669,729)->(410,1190)  expect B: start=(668,738) end=(409,1249)
+          got B: start=(668,737) bbox=(409,737,668,1250)  effEnd=(409,1250)
+          delta : start dx=0 dy=1 (PASS)   end dx=0 dy=1 (PASS)
+        B final: STROKE 1 points=9 …; STROKE 2 points=14 …; taps=0; strokes=2
+    Both genuine multi-point drags (9/14 ≫ 2 — NOT taps), distinct, opposite
+    directions, start exact, end ≤5px (≪ 30px tol). taps=0 → cal taps reset cleanly,
+    read-back strokes are unambiguously the injected ones. Self-cleaned: no stray
+    scrcpy-e2e containers; mf-e2e-*/redroid/ws-scrcpy untouched; no leftover e2e
+    emulator procs.
+  * CHECK 4 git: D2 commit `5d53007` pushed to `fork/android-controls-android` (tip
+    matches); tree clean; only gradle-wrapper.jar tracked (standard wrapper, not an
+    artifact); no APK/.so/.png tracked; `e2e/artifacts` gitignored.
 
 ## Backlog (next milestones — see plan for full accept criteria)
-- D3 — Display round-trip: red shape visible in A's screenshot at expected location;
-  add a multi-segment shape.
 - D4 — `e2e/run-draw.sh` one script, hermetic `--network none`, reliably green ≥3
   incl. cold; final audit → done → stop loop.
