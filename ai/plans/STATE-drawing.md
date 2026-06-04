@@ -28,7 +28,7 @@ Android goal is already DONE & audited — see `STATE.md`; do NOT break `e2e/run
 
 ---
 
-## Current milestone: **D4 — One script, reliable, audited**
+## Current milestone: **DONE — drawing-e2e goal fully realized**
 
 Accept: A single one-script entry (e.g. `bash e2e/run-draw.sh`, with a d-claude
 wrapper) runs the whole drawing e2e hermetically (inner `--network none` by default):
@@ -52,11 +52,12 @@ drawing-e2e goal is declared realized and the loop stops.
       must still go offline). 100% pass; capture the run-by-run table (exit codes,
       per-stroke B geometry + A red before/after, runtimes). Debug any flake to root
       cause (no flaky excuse).
-- [ ] FINAL drawing-e2e audit: from a clean state run `bash e2e/run-draw.sh` (or the
+- [x] FINAL drawing-e2e audit: from a clean state run `bash e2e/run-draw.sh` (or the
       wrapper) cold under `--network none`, green; confirm the full proof (strokes→B
       geometry + shapes→A visibility) + hermeticity + e2e/run.sh still green. Then
       declare the drawing-e2e goal FULLY REALIZED in STATE-drawing.md (Current
-      milestone → DONE). When this passes, the loop STOPS.
+      milestone → DONE). When this passes, the loop STOPS. **PASSED — see the FINAL
+      AUDIT progress-log entry below; the loop STOPS.**
 
 ### Progress log
 - 2026-06-04: Plan + STATE-drawing created. Goal: prove strokes work (A→B geometry)
@@ -587,6 +588,88 @@ drawing-e2e goal is declared realized and the loop stops.
   * Committed ONLY this STATE file (no source change needed; no APK/.so/PNG/artifacts —
     `e2e/artifacts` gitignored). Pushed to `fork/android-controls-android`.
 
-## Backlog (next milestones — see plan for full accept criteria)
-- D4 — `e2e/run-draw.sh` one script, hermetic `--network none`, reliably green ≥3
-  incl. cold; final audit → done → stop loop.
+- 2026-06-04: **FINAL DRAWING-E2E AUDIT — PASS. THE DRAWING-E2E GOAL IS FULLY
+  REALIZED. LOOP STOPS.** Skeptical TERMINATOR judge; every check reproduced with
+  COMMANDS on d-claude in `scrcpy-e2e:dev` (`ed870b002dfd`), OUTER docker-run
+  `--device /dev/kvm`, INNER `--network none` by default, 2 emulators mem=1536,
+  scrcpy 3.3.4. The goal — "a reliably-green ONE-SCRIPT hermetic two-emulator e2e
+  proving strokes injected on controller A are received by target B with correct
+  geometry AND the drawn shapes are displayed back in A's remote-view screenshot" —
+  is independently proven.
+  * ASSERTION INTEGRITY (read `e2e/run-draw.sh` end-to-end): the PASS condition (exit
+    0) genuinely requires ALL of — (a) CONNECTION: `INFO: Connected to` in A's
+    scrcpy stdio AND a scrcpy-server proc on B, else `fail` (lines 315-316);
+    (b) CONTROL: a stroke injected on emulator-5556 (A) via `draw_swipe` (line 433),
+    read from B via `run-as net.scrcpy.e2edraw` (lib-draw), asserted as a multi-point
+    drag points>2 with start/effEnd within max(30px,4%) of the per-run A→B transform
+    derived from 2 cal taps (NOT hardcoded; `auto_derive_transform`, hard-fails if a
+    cal tap isn't received) — `assert_b_stroke` lines 184-216; (c) DISPLAY: A
+    screenshot BEFORE red<=50 AND AFTER red>=500 in A's remote-view crop, with the
+    red location cross-validated — a B→A affine fitted ONLY from the single PART-1
+    diagonal (lines 482-496, gated on PART1 PASS) predicts where the L's arms must
+    land on A; (d) the L asserted on BOTH B (2 strokes geometry) AND A (red >=200 in
+    each affine-PREDICTED band, lines 616-625). A tap → small bbox → effEnd near
+    start → FAILS end; blank A → after<500 → FAILS; unrendered/black stream → no
+    Connected/no red → FAILS; wrong location → ~0 red in predicted band → FAILS; no
+    connection → `fail` non-zero. The `BA_OK=0` whole-crop fallback only triggers when
+    PART1 A already failed (all_pass already 0) — cannot rescue. No cheat path.
+  * THE AUTHORITATIVE COLD RUN (`docker volume rm scrcpy-gradle-cache` + wiped
+    output/android, porting/build/*-android, porting/libs, staged jniLibs+scrcpy-
+    server asset, all 3 APK build dirs — IMAGE untouched; then
+    `FORCE_NATIVE_REBUILD=1 bash e2e/run-draw.sh`, inner `--network none`). EXIT 0.
+    Banner: `==================== DRAW e2e SUCCESS (drawing round-trip green)
+    ====================`. Cold-rebuild proof: `building native stack: make -C
+    porting android-libs` → fresh `libscrcpy.so` 14108496 bytes (~8 min); all 3 APKs
+    rebuilt OFFLINE from the baked `/opt/gradle-home`; the `scrcpy-gradle-cache`
+    volume auto-recreated EMPTY (8.5K) — the /root/.gradle mount is a speed cache,
+    not a correctness dep; the baked offline gradle home suffices under
+    `--network none`. NO-NETWORK GREP all 0: git clone/curl/wget/^Get:/Could not
+    resolve/UnknownHostException/dl.google/maven/name-resolution-failure.
+    PART1 (verbatim): A swipe (216,288)->(594,768) 1000ms;
+      `B geometry [PASS] points=16(need>2:PASS) start=(215,249) effEnd=(591,778)
+       expS=(215,249) expE=(593,781) dStart=(0,0)[PASS] dEnd=(2,3)[PASS]`;
+      `A_before red=0 (<=50:PASS)`; `A_after red=21049 bbox=382,489,983,1348 (>=500:
+       PASS; 0s poll)`; `A_after shape W=601 H=859 (both>=80:PASS)`; PART1 B=PASS A=PASS.
+    PART2 L (verbatim): seg1 V (324,288)->(324,633); seg2 H (324,633)->(626,633);
+      `B seg1 [PASS] points=15 start=(323,249) effEnd=(323,612) expE=(323,631)
+       dEnd=(0,19)[PASS]`; `B seg2 [PASS] points=15 start=(323,631) effEnd=(629,631)
+       expE=(625,631) dEnd=(4,0)[PASS]`; `A_L_before red=0 (<=50:PASS; B reset → A's
+       red drained → displayed red tracks B's LIVE canvas, not a static artifact)`;
+      `A_L_after full crop red=20534 L-shape W=404 H=715 (both>=80:PASS)`;
+      `seg1(V) PREDICTED band=(465,399,645,1199) red=13716 (>=200:PASS)`;
+      `seg2(H) PREDICTED band=(645,1019,1127,1199) red=4407 (>=200:PASS)`;
+      L B=PASS A=PASS; B final `strokes=2 taps=0`; OVERALL: PASS.
+    VISUAL PNG CONFIRMATION (read the cold-run artifacts, not just counts):
+    `A_before.png` = A's blank white/gray remote canvas, no red; `A_after.png` = a
+    clean bright-red DIAGONAL on A's decoded remote view (`strokes=1` overlay);
+    `A_L_after.png` = a clean red **L** (vertical arm + horizontal arm sharing the
+    bottom-left corner, `strokes=2` overlay). Genuine round-trip screenshots of
+    emulator A. Self-cleaned (`cleanup done (rc=0)`; no stray scrcpy-e2e containers;
+    no e2e qemu procs); mf-e2e-*/redroid/ws-scrcpy untouched throughout.
+  * WARM CORROBORATION (`bash e2e/run-draw.sh`, default `--network none`): EXIT 0,
+    SUCCESS banner; PART1 B=PASS A=PASS (before=0→after=21042); PART2 both B segments
+    PASS + both A predicted bands PASS (seg1 15082 / seg2 6118); OVERALL PASS;
+    no-network greps 0; self-cleaned. (PART1 dEnd was (37,53) — the documented
+    `input swipe` ACTION_UP end-undershoot, both components within the max(30px,4%)
+    tol of 43px X / 77px Y → still PASS; confirms the effEnd=bbox-corner assertion is
+    robust to the quirk, not gamed.)
+  * NO REGRESSIONS: `bash -n` clean on e2e/run.sh + run-draw.sh + lib-draw.sh;
+    `py_compile` clean on detect_red.py; run.sh's dispatch sourcing-guard intact
+    (`if [ "${BASH_SOURCE[0]}" = "$0" ]`, line 581) — sourcing run.sh produces 0
+    side-effect bytes and exposes all helpers (boot_both/build_native/build_apks/
+    node_center/wm_size/b_server_proc/cleanup); the tap e2e (e2e/run.sh) parses
+    unchanged. D4 commits (fc8842d, ea73f12) pushed to fork/android-controls-android
+    (remote tip == local HEAD ea73f12); tree clean; no APK/.so/PNG/artifacts tracked
+    (only pre-existing iOS/app icons + standard gradle-wrapper.jars; e2e/artifacts
+    gitignored).
+  * END STATE: D1 (draw app + standalone capture + hermetic bake), D2 (stroke A→B
+    control geometry), D3 (display round-trip + L cross-validation), D4 (one-script
+    consolidation + reliability) — ALL audited PASS. `bash e2e/run-draw.sh` is the
+    ONE-SCRIPT hermetic proof: it proves strokes injected on A reach B with correct
+    geometry (CONTROL) AND that the drawn shapes are displayed back in A's remote-view
+    screenshot (DISPLAY), all under `--network none`. Reliably green incl. a true
+    cold from-scratch native rebuild. The A-side magnification display quirk (A renders
+    B's video ~1.6-1.8x magnified, top-left anchored, so the displayed red is NOT at
+    A's swipe coords and the L's horizontal arm runs to A's visible-surface edge) is
+    handled honestly via shape signature + a B→A affine cross-validation, not loosened
+    tolerances. THE DRAWING-E2E GOAL IS FULLY REALIZED. THE LOOP STOPS.
