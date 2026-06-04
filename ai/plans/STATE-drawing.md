@@ -46,7 +46,7 @@ d-claude.
       `filesDir/e2e_draw.txt`, logcat tag `E2E_DRAW`, and a `strokes=N` summary.
       ALSO record single touches as `taps=N last=X,Y` (so `lib-automation.sh`
       calibration still works). Add `.gitignore` (build/, .gradle/).
-- [ ] Verify standalone on d-claude in `scrcpy-e2e:dev` (BLOCKING): build the APK,
+- [x] Verify standalone on d-claude in `scrcpy-e2e:dev` (BLOCKING): build the APK,
       boot ONE emulator, install + launch the draw app, `adb shell input swipe
       X0 Y0 X1 Y1 300`, then assert: (a) `e2e_draw.txt`/logcat show a stroke with
       points>2 and start≈(X0,Y0) end≈(X1,Y1) within tolerance; (b) `exec-out
@@ -105,6 +105,44 @@ d-claude.
     volume, NO `--offline`/`--network none`), because baking the draw-app deps into
     the offline `GRADLE_USER_HOME=/opt/gradle-home` is the LATER D1 bake task. The
     on-emulator swipe→stroke + red-pixel assertion is the NEXT D1 task.
+- 2026-06-04: D1 task 2 DONE — standalone swipe→stroke + red-pixel verify GREEN on
+  d-claude (`scrcpy-e2e:dev`, one emulator `mem=1536`, `--device /dev/kvm`, network
+  gradle cache for the build). Wrote reusable `e2e/lib-draw.sh` (`draw_install`,
+  `draw_launch`, `draw_focused`, `draw_reset`, `draw_read_file`,
+  `draw_strokes_count`, `draw_read_strokes`, `draw_swipe`, `draw_screencap`,
+  `draw_count_red`, `draw_red_count_value` — sourceable pure bash) and
+  `e2e/detect_red.py` (Pillow; args `<png> [x0,y0,x1,y1]`, prints
+  `red_count=.. bbox=minx,miny,maxx,maxy centroid=cx,cy`, tunable via
+  `RED_R_MIN`/`RED_GB_MAX`; sanity-checked: a white-corner crop → `red_count=0`).
+  Verify driver `e2e/verify-draw.sh` (NOT committed; reusable bits live in
+  lib-draw/detect_red) reproduces run.sh boot logic (AVD
+  `system-images;android-30;google_apis;x86_64`, emulator v33.1.24,
+  `-no-window -gpu swiftshader_indirect -no-snapshot -accel on -memory 1536`).
+  * SCREEN: `1080x1920` (Physical size). SWIPE: `adb shell input swipe 300 800
+    760 1400 300` (diagonal, well inside the screen, clear of the top-left
+    `strokes=N` overlay).
+  * ASSERT (a) CONTROL/geometry — VERBATIM `e2e_draw.txt`:
+        STROKE 1 points=8 start=300,800 end=760,1400 bbox=300,800,760,1400
+        taps=0 last=-1,-1
+        strokes=1
+    LOGCAT: `E2E_DRAW: stroke #1 points=8 start=300,800 end=760,1400
+    bbox=300,800,760,1400`. strokes=1, points=8 (>2, a real drag — `input swipe`
+    interpolated 8 samples; observed 6–8 across runs, always >2), start delta
+    `(0,0)` end delta `(0,0)`. Tolerance used: `max(25px, 3%) = 57px`. PASS.
+  * ASSERT (b) DISPLAY/red — `exec-out screencap -p` → `detect_red.py`:
+    `red_count=8186 bbox=294,794,721,1347 centroid=507,1070`. red_count 8186
+    (≫ threshold 2000; the 12px-wide diagonal over ~460×600px). bbox spans the
+    swipe path: minx 294≈x0 300, miny 794≈y0 800, maxx 721≈x1 760, maxy 1347≈y1
+    1400. bbox-span tolerance `90px` — the painted red stops ~40–75px short of the
+    exact endpoint because `input swipe`'s final ACTION_UP is NOT connected by a
+    drawn MOVE segment (the app only stamps a dot for taps), leaving the last
+    interpolation gap unpainted; the RECORDED end is exact (delta 0,0). PASS.
+  * TRANSIENT DEP: `apt-get install -y python3 python3-pil` (Pillow 12.1.1) inside
+    the run container for THIS verify — gets BAKED into `e2e/Dockerfile` in the
+    NEXT D1 task; documented so the bake task is unambiguous.
+  * Full driver exited rc=0 (`D1 STANDALONE VERIFY: PASS`); self-cleaned (emulator
+    killed, AVD deleted, `--rm` container; mf-e2e-*/redroid/ws-scrcpy untouched).
+    Committed ONLY `e2e/lib-draw.sh`, `e2e/detect_red.py`, this STATE file.
 
 ## Backlog (next milestones — see plan for full accept criteria)
 - D2 — Stroke from A → control assertion on B (two emulators, connect, swipe on A,
