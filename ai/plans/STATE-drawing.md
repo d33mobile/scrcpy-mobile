@@ -47,7 +47,7 @@ drawing-e2e goal is declared realized and the loop stops.
       artifacts (A before/after + B screencaps, detect_red outputs, evidence file) to
       the mounted dir; clear SUCCESS/FAILURE banner; correct exit codes; self-cleaning.
       Reuse m4draw-display.sh logic; don't break e2e/run.sh (the tap e2e).
-- [ ] Make it reliably green: run `bash e2e/run-draw-on-d-claude.sh` (or run-draw.sh)
+- [x] Make it reliably green: run `bash e2e/run-draw-on-d-claude.sh` (or run-draw.sh)
       ≥3 times incl. ONE cold run (clear gradle volume + native caches; the baked image
       must still go offline). 100% pass; capture the run-by-run table (exit codes,
       per-stroke B geometry + A red before/after, runtimes). Debug any flake to root
@@ -527,6 +527,65 @@ drawing-e2e goal is declared realized and the loop stops.
     d-claude.sh` (wrapper), `e2e/m4draw-display.sh` (→ thin shim), this STATE file.
     No APK/.so/PNG/artifacts (`e2e/artifacts` gitignored). Pushed to
     `fork/android-controls-android`.
+
+- 2026-06-04: **D4 task 2 DONE — reliably green over 4/4 runs (3 warm + 1 cold), 100%
+  pass, ZERO flakes, NO fixes needed.** Ran on d-claude in `scrcpy-e2e:dev`
+  (`ed870b002dfd`, OUTER docker-run `--device /dev/kvm`, INNER `--network none` by
+  default, 2 emulators mem=1536, scrcpy 3.3.4). Host clean between every run (no stray
+  scrcpy-e2e containers, no e2e emulator/qemu procs leaked; mf-e2e-*/redroid/ws-scrcpy
+  untouched throughout). Each run self-cleaned `rc=0` and emitted the SUCCESS banner
+  `==================== DRAW e2e SUCCESS (drawing round-trip green) ====================`.
+  * RUN-BY-RUN RESULTS TABLE (all 4 exit 0; A swipe fixed at (216,288)->(594,768),
+    expE B=(593,781); L seg1 V (324,288)->(324,633) expE B=(323,631), seg2 H expE
+    B=(625,631); A-red before<=50 after>=500 per-seg>=200; B-tol max(30px,4%)):
+
+    | # | type | exit | runtime | PART1 B-geom (pts,dStart,dEnd) | A red before→after | PART2 L seg1 B dEnd / seg2 B dEnd | A_L seg1(V)/seg2(H) red |
+    |---|------|------|---------|-------------------------------|--------------------|----------------------------------|-------------------------|
+    | 1 | warm | 0 | 330s | pts=15 dS=(0,0) dE=(19,29) | 0 → 21031 | (0,9) / (21,0) | 14771 / 6099 |
+    | 2 | warm | 0 | 334s | pts=12 dS=(0,0) dE=(21,28) | 0 → 20958 | (0,3) / (1,0)  | 14689 / 6270 |
+    | 3 | warm | 0 | 375s | pts=16 dS=(0,0) dE=(11,15) | 0 → 21070 | (0,9) / (5,0)  | 14449 / 6422 |
+    | 4 | COLD | 0 | 794s | pts=15 dS=(0,0) dE=(1,1)   | 0 → 21073 | (0,43) / (2,0) | 12689 / 3390 |
+
+    Every run: PART1 B=PASS A=PASS, PART2 L B=PASS A=PASS, OVERALL PASS. Start delta
+    always exactly (0,0); all end deltas within the max(30px,4%) tol (worst single
+    component 43px on the L vertical arm of the cold run — under the 77px Y tol). A
+    before red always exactly 0 (A shows B's pristine white canvas), after always
+    ~20-21k (≫500 floor); both predicted L bands always ≫200. points always 12-16
+    (genuine multi-point drags, never taps). Numbers reproduce tightly run-to-run →
+    no flake.
+  * COLD RUN (run #4) — true from-scratch + still OFFLINE (re-proves hermeticity for
+    the drawing path):
+    - WIPED before the run: `docker volume rm scrcpy-gradle-cache` (image-only — the
+      baked offline `/opt/gradle-home` inside the image is untouched); on d-claude's
+      sync dir removed `output/android`, `porting/build`, `porting/libs`,
+      `android-app/app/src/main/jniLibs`, the staged `assets/scrcpy-server`, and ALL
+      `{android-app,e2e/target-app,e2e/draw-app}` `app/build`+`build`+`.gradle` dirs.
+      Verified GONE both before AND after the wrapper-style rsync (rsync excludes
+      those build paths, local repo has no build outputs → they stayed wiped).
+    - Ran `FORCE_NATIVE_REBUILD=1 bash e2e/run-draw.sh` (inner `--network none`,
+      hermetic). It rebuilt the FULL native stack from scratch: `building native
+      stack: make -C porting android-libs (ABI=x86_64) — LONG` → fresh
+      `output/android/x86_64/libscrcpy.so` (14111736 bytes) in ~8 min; then staged
+      natives + scrcpy-server asset, and rebuilt all THREE APKs OFFLINE from the baked
+      `GRADLE_USER_HOME=/opt/gradle-home` (android-app, target-app, draw-app
+      app-debug.apk 821737 bytes). The `scrcpy-gradle-cache` volume auto-recreated
+      EMPTY (8.5K) — proving the `/root/.gradle` mount is only a speed cache, not a
+      correctness dependency; the offline baked gradle home is sufficient under
+      `--network none`. Exit 0, full proof, self-cleaned.
+  * VISUAL CONFIRMATION (read the cold-run A PNGs, not just detect_red counts):
+    `A_after.png` = a clean red DIAGONAL on A's decoded remote view (`strokes=1`);
+    `A_L_after.png` = a clean red **L** (vertical + horizontal arms sharing the corner,
+    `strokes=2`). Genuine round-trip screenshots of emulator A (B content magnified
+    into A's surface + A's own status/nav bars + the right black letterbox). Round-trip
+    is real and visible.
+  * NO FLAKE, NO FIX: the previously-debugged flake sources (D2 findings) are already
+    mitigated in the consolidated script — `input swipe` END-undershoot handled by the
+    effEnd=bbox-corner-in-travel-direction assertion; short-swipe truncation handled by
+    the 1000ms `DRAW_SWIPE_MS`; connect race handled by the pre-connect reachability
+    probe + 3-attempt connect loop. All 4 runs connected on attempt #1 and needed none
+    of the retries. No source/script change was required this task.
+  * Committed ONLY this STATE file (no source change needed; no APK/.so/PNG/artifacts —
+    `e2e/artifacts` gitignored). Pushed to `fork/android-controls-android`.
 
 ## Backlog (next milestones — see plan for full accept criteria)
 - D4 — `e2e/run-draw.sh` one script, hermetic `--network none`, reliably green ≥3
