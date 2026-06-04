@@ -38,23 +38,38 @@ corresponds to the swipe path on A. Plus a multi-segment shape (e.g. an L) is as
 both on B (geometry) and on A (visible).
 
 ### Tasks
-- [ ] Extend the driver (m4draw-control.sh → or a D3 variant) to capture an A
+- [x] Extend the driver (m4draw-control.sh → or a D3 variant) to capture an A
       screenshot (`adb -s emulator-5556 exec-out screencap -p`) BEFORE the stroke and
       AFTER, and run detect_red.py on A's screenshot. ASSERT: before red_count≈0 in
       the canvas region; after red_count jumps over a clear threshold; and the after
       red blob's centroid/bbox is near the swipe path on A (the stroke is displayed
       where we drew it). This proves the drawn shape rendered back through the video
-      stream to A.
-- [ ] Account for A's remote-view region: A keeps system bars + letterboxes B's video
+      stream to A.  → DONE in `e2e/m4draw-display.sh` (D3 driver). before=0
+      after=21151 (≫500). The "centroid near A swipe coords" sub-claim turned out to
+      be EMPIRICALLY FALSE for this app (A renders B MAGNIFIED ~1.8x, not at swipe
+      coords — see progress log); replaced with a stronger, non-circular location
+      proof: shape signature + a B→A display affine fit from the single stroke,
+      cross-validated against the L. See 2026-06-04 D3 log.
+- [x] Account for A's remote-view region: A keeps system bars + letterboxes B's video
       (per the M3 transform OY offset). Restrict/crop the red detection to A's surface
       region (or just exclude the strokes=N overlay area / status bar) so the
       assertion is about the rendered remote canvas, not chrome. Derive the A-side
       expected location from the A swipe coords directly (the stroke on A's surface
-      shows ~where you swiped).
-- [ ] Add a MULTI-SEGMENT shape (e.g. an L or triangle = 2-3 chained swipes on A) and
+      shows ~where you swiped).  → DONE: crop = (54,153,993,1766) of 1080x1920
+      (excludes A status bar top 8%, nav bar bottom 8%, gray `strokes=N` overlay,
+      right black letterbox). CORRECTION to the assumption: the displayed stroke does
+      NOT show at the A swipe coords — A magnifies B ~1.8x top-left-anchored, so the
+      expected A location is derived from B's recorded coords via a fitted B→A display
+      affine, NOT from the swipe coords. Shapes kept in A's UPPER region so the whole
+      image is unclipped.
+- [x] Add a MULTI-SEGMENT shape (e.g. an L or triangle = 2-3 chained swipes on A) and
       assert BOTH: its segments on B (geometry, via lib-draw strokes) AND its
       visibility on A (red present along each segment in A's screenshot). Capture
-      before/after A screenshots as artifacts.
+      before/after A screenshots as artifacts.  → DONE: an L (vertical arm + horizontal
+      arm sharing a corner). B: 2 strokes, per-segment geometry within tol. A: red
+      along BOTH predicted segment bands (seg1 V=14118px, seg2 H=5424px) + L-shaped
+      combined bbox (W=404 H=715, both ≫80). A_L_after.png shows a clean L. Artifacts
+      A_before/A_after/A_L_before/A_L_after + B screencap + evidence captured.
 
 ### Progress log
 - 2026-06-04: Plan + STATE-drawing created. Goal: prove strokes work (A→B geometry)
@@ -335,6 +350,75 @@ both on B (geometry) and on A (visible).
   * CHECK 4 git: D2 commit `5d53007` pushed to `fork/android-controls-android` (tip
     matches); tree clean; only gradle-wrapper.jar tracked (standard wrapper, not an
     artifact); no APK/.so/.png tracked; `e2e/artifacts` gitignored.
+
+- 2026-06-04: **D3 COMPLETE (all 3 tasks)** — the display ROUND-TRIP is proven: a
+  stroke drawn on controller A is forwarded to B, B renders it red, B streams the
+  frame back, A decodes+displays it, and a SCREENSHOT OF EMULATOR A shows the red
+  stroke. New driver `e2e/m4draw-display.sh` (D3 variant of the D2 driver; sources
+  run.sh + lib-draw/lib-automation, same boot/build/connect/transform plumbing).
+  VERIFIED GREEN end-to-end on d-claude in `scrcpy-e2e:dev` (`--device /dev/kvm`,
+  `--network none`, 2 emulators mem=1536, scrcpy 3.3.4), rc=0 `DRAW-DISPLAY SUCCESS
+  (D3 green)`, self-cleaned; **2 consecutive green runs** (18:33 + 18:39, numbers
+  stable); mf-e2e-*/redroid/ws-scrcpy untouched, no stray scrcpy-e2e containers.
+  * KEY GEOMETRIC FINDING (debugged from the first run's screenshots, NOT papered
+    over): this app does NOT display B's video at A's swipe coordinates. A renders
+    B's frame MAGNIFIED ~1.8x, top-left anchored, so the displayed stroke lands
+    well below/right of where we swiped, and B content past B_y≈960 is CLIPPED off
+    A's surface bottom. The first D3 attempt (drawing in A's centre, asserting
+    "red centroid ≈ A swipe-path midpoint") FAILED exactly here: swipe-mid (540,960)
+    vs A red centroid (809,1517), and the L's horizontal arm ran off-screen
+    (A_L_after red bbox W=19 — only the vertical arm visible). The fix is geometric,
+    not a loosened tolerance: (a) draw every shape in A's UPPER region (small A_y)
+    so its whole B-image is inside A's visible magnified surface (unclipped);
+    (b) prove location via SHAPE SIGNATURE + a B→A display affine fitted from the
+    single stroke's B-recorded endpoints vs its A red bbox, CROSS-VALIDATED by
+    predicting where the L's segments must appear on A. The L bands are predicted
+    from the PART-1 diagonal — so the location match is not self-fulfilling.
+  * A REMOTE-VIEW CROP (D3 task 2): `(54,153,993,1766)` of A's `1080x1920` — excludes
+    A's status bar (top 8%), nav bar (bottom 8%), the gray `strokes=N` overlay
+    (top-left; gray not red so harmless anyway), and the right black letterbox
+    (right edge at 92%). detect_red thresholds: A before ≤50, after ≥500, per-segment
+    ≥200, predict-tol 90px. B-geometry tol max(30px,4%).
+  * A→B transform (verbatim, derived from 2 cal taps each run):
+        Calibration taps: A(324,576)->B(323,568) ; A(756,1344)->B(755,1420)
+        A->B (x1000): SX=1000 OX=-1000 SY=1109 OY=-70784
+  * PART 1 — SINGLE DIAGONAL STROKE (verbatim, canonical 18:33 run):
+        A swipe : (216,288) -> (594,768)
+        B geometry [PASS]: points=13 start=(215,249) effEnd=(591,779)
+          expS=(215,249) expE=(593,781) dStart=(0,0)[PASS] dEnd=(2,2)[PASS]
+        A_before red: red_count=0 bbox=NA centroid=NA          (need <=50 : PASS)
+        A_after  red: red_count=21151 bbox=382,489,983,1353 centroid=686,914
+                                                               (need >=500 : PASS)
+        A_after shape: bbox W=601 H=864  (diagonal needs both >=80 : PASS)
+        B->A display affine (x1000) fitted from this stroke:
+          SX=1598 OX=38430 SY=1630 OY=83130 (ok=1)   [~1.6x magnification]
+        PART1 verdict: B=PASS  A=PASS
+    before red_count 0 → after 21151 is the round-trip delta. A_after.png shows a
+    clean diagonal red line on A's white remote canvas.
+  * PART 2 — MULTI-SEGMENT L (verbatim, canonical 18:33 run):
+        A L: seg1 V (324,288)->(324,633) ; seg2 H (324,633)->(626,633)
+        B seg1 [PASS]: points=16 start=(323,249) effEnd=(323,618)
+          expS=(323,249) expE=(323,631) dStart=(0,0) dEnd=(0,13) [PASS]
+        B seg2 [PASS]: points=13 start=(323,631) effEnd=(622,631)
+          expS=(323,631) expE=(625,631) dStart=(0,0) dEnd=(3,0) [PASS]
+        A_L_before red: red_count=0  (need <=50 : PASS; B reset → A's red drained,
+          proving the displayed red TRACKS B's live canvas, not a static artifact)
+        A_L_after red (full crop): red_count=20742 bbox=579,489,983,1204
+          L-shape bbox W=404 H=715 (both >=80 : PASS)
+        A_L_after seg1(V) PREDICTED band=(465,399,645,1202): red_count=14118 (PASS)
+        A_L_after seg2(H) PREDICTED band=(645,1022,1127,1202): red_count=5424 (PASS)
+        B final: STROKE 1 points=16 …; STROKE 2 points=13 …; taps=0; strokes=2
+        L verdict: B=PASS  A=PASS   ;  OVERALL: PASS
+    A_L_after.png shows a clean L (vertical arm + horizontal arm sharing the corner),
+    fully inside A's visible surface. Both segment bands are PREDICTED from the
+    PART-1 diagonal's B→A affine — the L's visible red lands in those predicted
+    bands (cross-validation).
+  * STABILITY (18:39 rerun, same coords): B->A affine SX=1611 (≈1.6x, matches);
+    A_after=21035; L seg1 A=14465 seg2 A=6422; all PASS; rc=0. Numbers reproduce.
+  * Committed ONLY `e2e/m4draw-display.sh` (new D3 driver) + this STATE file. No
+    APK/.so/PNG/artifacts (`e2e/artifacts` gitignored). Pushed to
+    `fork/android-controls-android`.
+    >>> D3 milestone accept-criteria all met — spawn the D3 foreground AUDIT next.
 
 ## Backlog (next milestones — see plan for full accept criteria)
 - D4 — `e2e/run-draw.sh` one script, hermetic `--network none`, reliably green ≥3
