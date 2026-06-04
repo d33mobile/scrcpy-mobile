@@ -573,8 +573,15 @@ inner() {
 # ===========================================================================
 # Dispatch
 # ===========================================================================
-case "${1:-}" in
-  --inner) shift; inner "$@" ;;
-  --smoke) outer --smoke ;;
-  *)       outer ;;
-esac
+# Only dispatch when EXECUTED directly. When SOURCED (e.g. e2e/m4draw-control.sh
+# reusing boot_both/build_native/build_apks/node_center/wm_size/b_server_proc and
+# the OUTER docker-run plumbing), BASH_SOURCE[0] != $0, so we skip the dispatch and
+# just expose the helpers. This keeps run.sh the single authoritative connect flow
+# while letting the drawing-e2e drivers reuse it instead of copy-pasting it.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-}" in
+    --inner) shift; inner "$@" ;;
+    --smoke) outer --smoke ;;
+    *)       outer ;;
+  esac
+fi
