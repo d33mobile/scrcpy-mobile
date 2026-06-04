@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true">
+
+        <!-- Single full-screen drawing Activity. exported=true so the e2e harness
+             can `am start` it directly. configChanges keeps the same Activity
+             instance (and thus the accumulated bitmap + stroke list) across
+             rotation/resize. Light/fullscreen theme + an explicit WHITE view
+             background give the high-contrast white canvas the red strokes are
+             drawn on. -->
+        <activity
+            android:name=".DrawActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation"
+            android:screenOrientation="sensor"
+            android:theme="@android:style/Theme.Light.NoTitleBar.Fullscreen">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

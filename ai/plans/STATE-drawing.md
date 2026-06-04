@@ -37,7 +37,7 @@ emulator's screenshot. Draw-app gradle deps baked into the image. Verified on
 d-claude.
 
 ### Tasks
-- [ ] Build `e2e/draw-app/` — a minimal standalone Gradle/Android project (mirror
+- [x] Build `e2e/draw-app/` — a minimal standalone Gradle/Android project (mirror
       `e2e/target-app/`'s AGP 8.7.3 / Gradle 8.9 / Kotlin 2.0.21 setup), package
       `net.scrcpy.e2edraw`, fullscreen white `DrawActivity` with a custom drawing
       View: ACTION_DOWN/MOVE/UP capture strokes, draw thick bright-red (`#FF0000`,
@@ -66,6 +66,45 @@ d-claude.
 - 2026-06-04: Plan + STATE-drawing created. Goal: prove strokes work (A→B geometry)
   AND that drawn shapes are displayed back on A (red-pixel detection in A's
   screenshot). Starting D1.
+- 2026-06-04: D1 task 1 DONE — built `e2e/draw-app/` (package `net.scrcpy.e2edraw`,
+  activity `net.scrcpy.e2edraw.DrawActivity`, exported LAUNCHER, fullscreen WHITE
+  `Theme.Light.NoTitleBar.Fullscreen` + explicit white view bg, `FLAG_KEEP_SCREEN_ON`,
+  system bars hidden, `screenOrientation=sensor`). Mirrors target-app gradle setup
+  exactly: AGP 8.7.3 / Gradle 8.9 / Kotlin 2.0.21, `compileSdk=36`, `minSdk=26`,
+  `buildToolsVersion=37.0.0`, copied gradlew/wrapper jar+props/gradle.properties/
+  .gitignore verbatim.
+  * Touch handling: a deliberately NON-clickable custom `DrawView.onTouchEvent`
+    (returns true for handled gestures so we receive the full DOWN→MOVE*→UP — the
+    clickable-consumes-DOWN bug the target-app hit). ACTION_DOWN starts a stroke,
+    ACTION_MOVE appends a point + draws a thick bright-red `#FF0000` segment
+    (strokeWidth 12, ANTI_ALIAS, ROUND cap/join) from the prev point onto a
+    PERSISTENT ARGB_8888 Bitmap (accumulates; re-created preserving content on
+    onSizeChanged), ACTION_UP finalizes (pure DOWN+UP stamps a red dot).
+    Coords via `event.getX()/getY()` rounded to int device px.
+  * Recording channels (mirror target-app): FILE `filesDir/e2e_draw.txt` rewritten
+    every stroke — one line per stroke `STROKE n points=K start=x0,y0 end=xN,yN
+    bbox=minx,miny,maxx,maxy`, then a `taps=N last=X,Y` line, then `strokes=N`
+    summary; LOGCAT tag `E2E_DRAW` (`stroke #n points=K start=.. end=.. bbox=..`
+    per stroke and `tap #N at X,Y` per tap); on-screen small top-left
+    semi-transparent TextView text+content-desc `strokes=N` for uiautomator
+    (placed/sized so it doesn't obscure the canvas the red detector samples).
+  * Tap vs stroke THRESHOLD: `TAP_SLOP_PX=16`. A gesture is a TAP when it has ≤1
+    move-distinct point AND its bbox spans ≤16 px in BOTH axes (DOWN+UP, negligible
+    movement); taps are ALSO recorded as `taps=N last=X,Y` so `lib-automation.sh`'s
+    2-tap A→B calibration works unchanged. Any real `input swipe` (tens-hundreds px)
+    is a stroke. 16 px is a few px above typical ViewConfiguration touch slop.
+  * BUILD VERIFIED on d-claude in `scrcpy-e2e:dev`: rsynced draw-app to
+    `/srv/work/scrcpy-mobile-e2e/e2e/draw-app/`, `docker run` (repo at /workspace,
+    `-v scrcpy-gradle-cache:/root/.gradle`) `./gradlew --no-daemon assembleDebug` →
+    `BUILD SUCCESSFUL in 1m 38s`, produced `app/build/outputs/apk/debug/app-debug.apk`
+    (821737 bytes). `aapt2 dump badging` → `package: name='net.scrcpy.e2edraw'`,
+    `launchable-activity: name='net.scrcpy.e2edraw.DrawActivity'`. Dex byte-search
+    confirms `Lnet/scrcpy/e2edraw/DrawActivity;`, `…/DrawView;`, `…/Stroke;` present
+    (in classes3.dex; classes.dex is Kotlin stdlib).
+  * NOTE: this FIRST build used the NETWORK gradle cache (`scrcpy-gradle-cache`
+    volume, NO `--offline`/`--network none`), because baking the draw-app deps into
+    the offline `GRADLE_USER_HOME=/opt/gradle-home` is the LATER D1 bake task. The
+    on-emulator swipe→stroke + red-pixel assertion is the NEXT D1 task.
 
 ## Backlog (next milestones — see plan for full accept criteria)
 - D2 — Stroke from A → control assertion on B (two emulators, connect, swipe on A,
